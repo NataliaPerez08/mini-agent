@@ -36,9 +36,12 @@ def git_repo_with_files(git_repo: Path) -> Path:
 
 
 class StubModel:
-    def __init__(self, responses: Sequence[str]):
+    def __init__(self, responses: Sequence[str], model: str = "qwen2.5-coder:7b"):
         self._responses = list(responses)
         self.calls: list[tuple[str, str]] = []
+        self.last_usage: dict[str, int] = {}
+        self.model = model
+        self.temperature = 0.1
 
     def chat(self, system: str, user: str) -> str:
         self.calls.append((system, user))

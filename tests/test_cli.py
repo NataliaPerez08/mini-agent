@@ -18,6 +18,29 @@ class TestBuildParser:
         assert args.api_key == "local"
         assert args.test_command == ""
         assert args.max_iterations == 12
+        assert args.experiment_log is True
+        assert args.experiments_dir == "./experiments"
+
+    def test_no_experiment_log(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--repo", "/tmp/x", "--task", "t", "--no-experiment-log"]
+        )
+        assert args.experiment_log is False
+
+    def test_explicit_experiment_log(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--repo", "/tmp/x", "--task", "t", "--experiment-log"]
+        )
+        assert args.experiment_log is True
+
+    def test_custom_experiments_dir(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--repo", "/tmp/x", "--task", "t", "--experiments-dir", "/tmp/exp"]
+        )
+        assert args.experiments_dir == "/tmp/exp"
 
     def test_custom_values(self):
         parser = build_parser()

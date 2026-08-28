@@ -25,3 +25,6 @@ include = ["mini_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"mini_agent/experiments.py" = ["S110", "BLE001"]

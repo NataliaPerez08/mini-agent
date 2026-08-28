@@ -21,6 +21,7 @@ class OpenAICompatModel:
         self.timeout = timeout
         self.verbose = verbose
         self.last_usage: dict[str, int] = {}
+        self.temperature = 0.1
 
     def chat(self, system: str, user: str) -> str:
         url = f"{self.base_url}/chat/completions"
