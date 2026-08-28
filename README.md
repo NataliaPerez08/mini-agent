@@ -4,6 +4,7 @@ A deliberately small coding-agent harness aimed at local 3B-14B models.
 
 It exposes only a few operations to the model:
 
+- `read_symbol`
 - `read_file`
 - `search_code`
 - `apply_patch`
@@ -74,6 +75,12 @@ This is an MVP, not a secure sandbox. Run it on a disposable branch/container fo
 
 The model must emit one JSON object per turn.
 
+Read symbol (preferred when indexed symbols exist):
+
+```json
+{"action":"read_symbol","path":"internal/firewall/service.go","symbol":"ApplyPolicy"}
+```
+
 Read:
 
 ```json
@@ -108,12 +115,50 @@ Finish:
 
 ```text
 Task
-  -> repo map
-  -> compact working memory
+  -> repo map (with symbol index + line ranges)
+  -> relevant symbol candidates (auto-selected from task keywords)
+  -> compact working context (pruned by char budget)
   -> model
-  -> one validated tool action
+  -> one validated tool action (read_symbol / read_file / search_code / apply_patch)
   -> verification
   -> repeat
 ```
 
 The implementation is intentionally compact so it is easy to modify.
+
+## Symbol indexing
+
+The agent builds a `SymbolIndex` at startup using:
+
+- **Tree-sitter** for Go (functions, methods, structs, interfaces, const/var groups)
+- **Python stdlib `ast`** for Python (functions, async functions, classes)
+
+If a parser fails for a file, the agent continues without symbols for that file.
+
+The repo map includes compact symbol references with line ranges:
+
+```text
+internal/firewall/service.go
+  Service struct L10-L16
+  NewService() L18-L27
+  ApplyPolicy() L31-L74
+  (*Service) Status() L80-L102
+```
+
+`read_symbol` resolves a symbol name to its line range and reads only
+`start_line - 5` through `end_line + 5`, avoiding sending entire large files
+to the model.
+
+## Context budget
+
+Per task type:
+
+| Type     | Max code context chars |
+|----------|----------------------|
+| INSPECT  | 4000                 |
+| LOCATE   | 5000                 |
+| MODIFY   | 8000                 |
+| DEBUG    | 10000                |
+
+When the budget is exceeded, older code snippets are pruned from the working
+context and replaced with a short summary.

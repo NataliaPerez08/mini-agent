@@ -21,15 +21,24 @@ class TestBuildParser:
 
     def test_custom_values(self):
         parser = build_parser()
-        args = parser.parse_args([
-            "--repo", "/tmp/x",
-            "--task", "t",
-            "--base-url", "http://localhost:8080/v1",
-            "--model", "custom-model",
-            "--api-key", "secret",
-            "--test-command", "pytest -q",
-            "--max-iterations", "5",
-        ])
+        args = parser.parse_args(
+            [
+                "--repo",
+                "/tmp/x",
+                "--task",
+                "t",
+                "--base-url",
+                "http://localhost:8080/v1",
+                "--model",
+                "custom-model",
+                "--api-key",
+                "secret",
+                "--test-command",
+                "pytest -q",
+                "--max-iterations",
+                "5",
+            ]
+        )
         assert args.base_url == "http://localhost:8080/v1"
         assert args.model == "custom-model"
         assert args.api_key == "secret"
@@ -45,7 +54,9 @@ class TestBuildParser:
 class TestMain:
     def test_nonexistent_dir_exits(self):
         import sys
+
         from mini_agent.cli import main
+
         old = sys.argv
         sys.argv = ["mini-agent", "--repo", "/nonexistent/path/xyz", "--task", "t"]
         try:
@@ -57,7 +68,9 @@ class TestMain:
 
     def test_non_git_dir_exits(self, tmp_path):
         import sys
+
         from mini_agent.cli import main
+
         d = tmp_path / "notgit"
         d.mkdir()
         old = sys.argv

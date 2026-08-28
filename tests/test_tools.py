@@ -1,7 +1,6 @@
-import subprocess
-
 import pytest
 
+from mini_agent.symbols import Symbol, SymbolIndex
 from mini_agent.tools import RepoTools
 
 
@@ -157,3 +156,110 @@ class TestRunTests:
         result = tools.run_tests()
         assert "hello_test" in result
         assert "EXIT_CODE=0" in result
+
+
+GO_FILE = """package firewall
+
+type Service struct {
+\tName string
+}
+
+func NewService() *Service {
+\treturn &Service{}
+}
+
+func (s *Service) Status() string {
+\treturn s.Name
+}
+
+func ApplyPolicy() error {
+\treturn nil
+}
+"""
+
+
+class TestReadSymbol:
+    def _make_tools(self, git_repo):
+        (git_repo / "fw").mkdir()
+        (git_repo / "fw" / "service.go").write_text(GO_FILE)
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Service", "struct", "fw/service.go", 3, 5),
+                Symbol("NewService", "function", "fw/service.go", 7, 9),
+                Symbol(
+                    "Status", "method", "fw/service.go", 11, 13, receiver="*Service"
+                ),
+                Symbol("ApplyPolicy", "function", "fw/service.go", 15, 17),
+            ]
+        )
+        return RepoTools(git_repo, "", symbol_index=idx)
+
+    def test_read_symbol_returns_range(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "ApplyPolicy")
+        assert "SYMBOL ApplyPolicy" in result
+        assert "func ApplyPolicy" in result
+        assert "L15-L17" in result
+
+    def test_read_symbol_adds_context(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "ApplyPolicy")
+        lines = result.splitlines()
+        body_lines = [
+            l for l in lines if l.strip() and ":" in l and not l.startswith("SYMBOL")
+        ]
+        first_line_num = int(body_lines[0].strip().split(":")[0])
+        last_line_num = int(body_lines[-1].strip().split(":")[0])
+        assert first_line_num == 10
+        assert last_line_num == 17
+
+    def test_read_symbol_not_found(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "NonExistent")
+        assert "ERROR" in result
+        assert "not found" in result
+
+    def test_read_symbol_nonexistent_file(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/nope.go", "Foo")
+        assert result.startswith("ERROR:")
+
+    def test_read_symbol_case_insensitive(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "applypolicy")
+        assert "ApplyPolicy" in result
+
+    def test_read_symbol_method(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "Status")
+        assert "SYMBOL Status" in result
+        assert "method" in result
+        assert "func (s *Service) Status" in result
+
+    def test_read_symbol_struct(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "Service")
+        assert "SYMBOL Service" in result
+        assert "struct" in result
+        assert "type Service struct" in result
+
+    def test_read_symbol_custom_context_lines(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "ApplyPolicy", context_lines=1)
+        lines = result.splitlines()
+        body_lines = [
+            l for l in lines if l.strip() and ":" in l and not l.startswith("SYMBOL")
+        ]
+        first_line_num = int(body_lines[0].strip().split(":")[0])
+        assert first_line_num == 14
+
+    def test_read_symbol_no_index(self, git_repo):
+        (git_repo / "a.go").write_text("package x\n\nfunc Foo() {}\n")
+        tools = RepoTools(git_repo, "")
+        result = tools.read_symbol("a.go", "Foo")
+        assert "ERROR" in result
+
+    def test_read_file_still_works_as_fallback(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_file("fw/service.go")
+        assert "func ApplyPolicy" in result

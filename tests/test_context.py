@@ -1,42 +1,9 @@
 from mini_agent.context import (
-    IGNORED,
     SYSTEM_PROMPT,
-    build_repo_map,
+    build_initial_context,
     build_turn_prompt,
     git_status,
 )
-
-
-class TestBuildRepoMap:
-    def test_lists_files(self, git_repo_with_files):
-        repo_map = build_repo_map(git_repo_with_files)
-        assert "src/app.py" in repo_map
-        assert "src/utils.py" in repo_map
-        assert "README.md" in repo_map
-
-    def test_ignores_directories(self, git_repo_with_files):
-        repo_map = build_repo_map(git_repo_with_files)
-        assert ".venv" not in repo_map
-        assert "ignored.py" not in repo_map
-
-    def test_output_is_sorted(self, git_repo_with_files):
-        repo_map = build_repo_map(git_repo_with_files)
-        lines = repo_map.splitlines()
-        assert lines == sorted(lines)
-
-    def test_empty_repo(self, git_repo):
-        repo_map = build_repo_map(git_repo)
-        assert repo_map == ""
-
-    def test_max_files_limit(self, git_repo):
-        for i in range(10):
-            (git_repo / f"f{i}.py").write_text("x\n")
-        repo_map = build_repo_map(git_repo, max_files=5)
-        assert len(repo_map.splitlines()) == 5
-
-    def test_ignored_set_contains_common_dirs(self):
-        for d in [".git", ".venv", "node_modules", "build", "dist"]:
-            assert d in IGNORED
 
 
 class TestGitStatus:
@@ -56,7 +23,14 @@ class TestSystemPrompt:
         assert len(SYSTEM_PROMPT) > 50
 
     def test_mentions_all_actions(self):
-        for action in ["read_file", "search_code", "apply_patch", "run_tests", "finish"]:
+        for action in [
+            "read_file",
+            "read_symbol",
+            "search_code",
+            "apply_patch",
+            "run_tests",
+            "finish",
+        ]:
             assert action in SYSTEM_PROMPT
 
     def test_mentions_json(self):
@@ -102,3 +76,41 @@ class TestBuildTurnPrompt:
         assert "iter 12" in prompt
         assert "iter 11" not in prompt
         assert "iter 12" in prompt
+
+
+class TestBuildInitialContext:
+    def test_contains_all_sections(self):
+        ctx = build_initial_context(
+            task="Fix the bug",
+            repo_map="src/app.py\n  def main()",
+        )
+        assert "TASK" in ctx
+        assert "Fix the bug" in ctx
+        assert "REPOSITORY MAP" in ctx
+        assert "src/app.py" in ctx
+        assert "INSTRUCTIONS" in ctx
+
+    def test_instructions_present(self):
+        ctx = build_initial_context(task="T", repo_map="")
+        assert "INSTRUCTIONS" in ctx
+        assert "lecturas" in ctx
+
+    def test_truncation_keeps_task(self):
+        big_map = "x" * 50000
+        ctx = build_initial_context(
+            task="MY IMPORTANT TASK", repo_map=big_map, max_chars=500
+        )
+        assert "MY IMPORTANT TASK" in ctx
+        assert "INSTRUCTIONS" in ctx
+        assert len(ctx) <= 500 + 200
+
+    def test_truncation_never_removes_task_or_instructions(self):
+        big_map = "y" * 100000
+        ctx = build_initial_context(task="KEEPME", repo_map=big_map, max_chars=1000)
+        assert "KEEPME" in ctx
+        assert "INSTRUCTIONS" in ctx
+        assert "REPOSITORY MAP" in ctx
+
+    def test_small_repo_map_not_truncated(self):
+        ctx = build_initial_context(task="T", repo_map="short map", max_chars=12000)
+        assert "short map" in ctx

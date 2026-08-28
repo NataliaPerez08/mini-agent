@@ -5,5 +5,7 @@ Summary: Minimal coding-agent harness for small local language models
 Requires-Python: >=3.10
 Requires-Dist: httpx<1,>=0.27
 Requires-Dist: pydantic<3,>=2.7
+Requires-Dist: tree-sitter<1,>=0.23
+Requires-Dist: tree-sitter-go<1,>=0.23
 Provides-Extra: dev
 Requires-Dist: pytest<10,>=8; extra == "dev"
