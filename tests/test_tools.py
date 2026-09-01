@@ -158,6 +158,43 @@ class TestRunTests:
         assert "EXIT_CODE=0" in result
 
 
+class TestRunTargetedTests:
+    def test_no_command_configured(self, git_repo):
+        tools = RepoTools(git_repo, "")
+        result = tools.run_targeted_tests(["a.py"])
+        assert result == "NO TEST COMMAND CONFIGURED"
+
+    def test_whitespace_only_command(self, git_repo):
+        tools = RepoTools(git_repo, "   ")
+        result = tools.run_targeted_tests(["a.py"])
+        assert result == "NO TEST COMMAND CONFIGURED"
+
+    def test_empty_test_files_delegates_to_full_run(self, git_repo):
+        tools = RepoTools(git_repo, "true")
+        result = tools.run_targeted_tests([])
+        assert "EXIT_CODE=0" in result
+
+    def test_non_pytest_command_runs_configured_command(self, git_repo):
+        tools = RepoTools(git_repo, "echo targeted_cmd")
+        result = tools.run_targeted_tests(["a.py", "b.py"])
+        assert "targeted_cmd" in result
+        assert "EXIT_CODE=0" in result
+
+    def test_pytest_command_targets_files(self, git_repo):
+        (git_repo / "test_thing.py").write_text("def test_ok():\n    assert True\n")
+        tools = RepoTools(git_repo, "pytest -q")
+        result = tools.run_targeted_tests(["test_thing.py"])
+        assert "EXIT_CODE=0" in result
+        assert "1 passed" in result
+
+    def test_python_m_pytest_command_targets_files(self, git_repo):
+        (git_repo / "test_thing.py").write_text("def test_ok():\n    assert True\n")
+        tools = RepoTools(git_repo, "python -m pytest")
+        result = tools.run_targeted_tests(["test_thing.py"])
+        assert "EXIT_CODE=0" in result
+        assert "1 passed" in result
+
+
 GO_FILE = """package firewall
 
 type Service struct {

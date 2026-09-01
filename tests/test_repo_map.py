@@ -3,78 +3,9 @@ from mini_agent.repo_map import (
     MAX_REPO_MAP_CHARS,
     MAX_SYMBOLS_PER_FILE,
     build_repo_map,
-    extract_python_symbols,
 )
 from mini_agent.scanner import scan_repository
 from mini_agent.symbols import build_symbol_index
-
-
-class TestExtractPythonSymbols:
-    def test_extract_functions(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text("def foo():\n    pass\n\ndef bar():\n    return 1\n")
-        syms = extract_python_symbols(p)
-        assert "def foo()" in syms
-        assert "def bar()" in syms
-
-    def test_extract_async_functions(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text("async def fetch():\n    pass\n")
-        syms = extract_python_symbols(p)
-        assert "async def fetch()" in syms
-
-    def test_extract_classes(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text("class User:\n    pass\n\nclass Admin(User):\n    pass\n")
-        syms = extract_python_symbols(p)
-        assert "class User" in syms
-        assert "class Admin" in syms
-
-    def test_mixed_symbols(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text(
-            "def login():\n    pass\n\n"
-            "class User:\n    pass\n\n"
-            "async def validate():\n    pass\n"
-        )
-        syms = extract_python_symbols(p)
-        assert syms == ["def login()", "class User", "async def validate()"]
-
-    def test_tolerates_syntax_error(self, tmp_path):
-        p = tmp_path / "broken.py"
-        p.write_text("def foo(:\n    pass\n")
-        syms = extract_python_symbols(p)
-        assert syms == []
-
-    def test_empty_file(self, tmp_path):
-        p = tmp_path / "empty.py"
-        p.write_text("")
-        syms = extract_python_symbols(p)
-        assert syms == []
-
-    def test_nonexistent_file(self, tmp_path):
-        syms = extract_python_symbols(tmp_path / "nope.py")
-        assert syms == []
-
-    def test_no_body_extracted(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text("def foo():\n    x = 1\n    y = 2\n    return x + y\n")
-        syms = extract_python_symbols(p)
-        assert syms == ["def foo()"]
-        assert "x = 1" not in syms
-
-    def test_max_symbols_limit(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text("".join(f"def f{i}():\n    pass\n\n" for i in range(50)))
-        syms = extract_python_symbols(p, max_symbols=5)
-        assert len(syms) == 5
-
-    def test_nested_functions_not_top_level(self, tmp_path):
-        p = tmp_path / "a.py"
-        p.write_text("def outer():\n    def inner():\n        pass\n")
-        syms = extract_python_symbols(p)
-        assert syms == ["def outer()"]
-        assert "def inner()" not in syms
 
 
 class TestBuildRepoMap:

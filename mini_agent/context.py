@@ -12,47 +12,15 @@ def git_status(repo: Path) -> str:
     return status or "<clean>"
 
 
-SYSTEM_PROMPT = r"""
-You are a small-model coding agent operating inside one repository.
-
-You MUST return exactly one JSON object and no commentary.
-Choose exactly one action per turn.
-
-Allowed actions:
-1. {"action":"read_symbol","path":"...","symbol":"..."}
-2. {"action":"read_file","path":"...","start":1,"end":220}
-3. {"action":"search_code","query":"...","path":"."}
-4. {"action":"apply_patch","patch":"<valid unified diff>"}
-5. {"action":"run_tests"}
-6. {"action":"finish","summary":"..."}
-
-Rules:
-- Prefer read_symbol when a relevant symbol exists.
-- Use read_file only for tiny files, config files, README, files without indexed symbols, or when surrounding file-level context is genuinely required.
-- Read before editing.
-- Make the smallest change that solves the task.
-- Never modify unrelated files.
-- Prefer search before guessing filenames or symbols.
-- Patches must be standard unified diffs accepted by `git apply`.
-- Never claim success without test evidence when tests are configured.
-- If a patch fails, inspect the file and produce a corrected patch.
-- Do not emit markdown fences.
-""".strip()
-
-_BASE = (
+SYSTEM_PROMPT = (
     "You are a small-model coding agent operating inside one repository.\n"
     "You MUST return exactly one JSON object and no commentary.\n"
     "Choose exactly one action per turn."
 )
 
-_READ_SYMBOL_HINT = (
-    "\nPrefer read_symbol when a relevant symbol exists.\n"
-    "Use read_file only for tiny files, config files, README, "
-    "files without indexed symbols, or when surrounding file-level context is genuinely required."
-)
 
 SYSTEM_PROMPTS: dict[str, str] = {
-    "discover_read": _BASE
+    "discover_read": SYSTEM_PROMPT
     + """
 
 Goal: Identify only the information required to answer the task.
@@ -71,7 +39,7 @@ Rules:
 - Prefer search before guessing filenames or symbols.
 - Patches must be standard unified diffs accepted by `git apply`.
 - Do not emit markdown fences.""",
-    "plan": _BASE
+    "plan": SYSTEM_PROMPT
     + """
 
 Produce a minimal implementation plan.
@@ -81,7 +49,7 @@ Maximum 3 steps.
 Return:
 {"action":"plan","files":["..."],"summary":"..."}
 Do not emit markdown fences.""",
-    "edit": _BASE
+    "edit": SYSTEM_PROMPT
     + """
 
 Return only one patch action.
@@ -91,7 +59,7 @@ Do not read unrelated files.
 Return:
 {"action":"apply_patch","patch":"<valid unified diff>"}
 Do not emit markdown fences.""",
-    "repair": _BASE
+    "repair": SYSTEM_PROMPT
     + """
 
 Tests failed.
@@ -102,7 +70,7 @@ Allowed actions:
   {"action":"read_symbol","path":"...","symbol":"..."}
   {"action":"read_file","path":"...","start":1,"end":220}
 Do not emit markdown fences.""",
-    "budget_exhausted_finish": _BASE
+    "budget_exhausted_finish": SYSTEM_PROMPT
     + """
 
 READ BUDGET EXHAUSTED.
@@ -113,7 +81,7 @@ Do not request read_file or search_code.
 Allowed action:
   {"action":"finish","summary":"..."}
 Do not emit markdown fences.""",
-    "budget_exhausted_plan": _BASE
+    "budget_exhausted_plan": SYSTEM_PROMPT
     + """
 
 READ BUDGET EXHAUSTED.

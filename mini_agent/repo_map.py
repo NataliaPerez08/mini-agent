@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 from .scanner import RepoScan
@@ -12,28 +11,6 @@ MAX_FILES_IN_MAP = 60
 MAX_REPO_MAP_CHARS = 5000
 MAX_REPO_MAP_CHARS_INSPECT = 2500
 MAX_FILES_SECTION_CHARS = 1200
-
-
-def extract_python_symbols(path: Path, max_symbols: int = 30) -> list[str]:
-    try:
-        source = path.read_text(errors="replace")
-    except OSError:
-        return []
-    try:
-        tree = ast.parse(source, filename=str(path))
-    except SyntaxError:
-        return []
-    symbols: list[str] = []
-    for node in tree.body:
-        if len(symbols) >= max_symbols:
-            break
-        if isinstance(node, ast.AsyncFunctionDef):
-            symbols.append(f"async def {node.name}()")
-        elif isinstance(node, ast.FunctionDef):
-            symbols.append(f"def {node.name}()")
-        elif isinstance(node, ast.ClassDef):
-            symbols.append(f"class {node.name}")
-    return symbols
 
 
 def _primary_language(scan: RepoScan) -> str | None:

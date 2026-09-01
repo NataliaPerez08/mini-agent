@@ -1,5 +1,6 @@
 from mini_agent.context import (
     SYSTEM_PROMPT,
+    SYSTEM_PROMPTS,
     build_initial_context,
     build_state_prompt,
     build_turn_prompt,
@@ -23,16 +24,21 @@ class TestSystemPrompt:
     def test_is_non_empty(self):
         assert len(SYSTEM_PROMPT) > 50
 
-    def test_mentions_all_actions(self):
+    def test_is_the_shared_base_for_all_state_prompts(self):
+        for prompt in SYSTEM_PROMPTS.values():
+            assert prompt.startswith(SYSTEM_PROMPT)
+
+    def test_all_actions_advertised_across_state_prompts(self):
+        all_prompts = "\n".join(SYSTEM_PROMPTS.values())
         for action in [
             "read_file",
             "read_symbol",
             "search_code",
             "apply_patch",
-            "run_tests",
+            "plan",
             "finish",
         ]:
-            assert action in SYSTEM_PROMPT
+            assert action in all_prompts
 
     def test_mentions_json(self):
         assert "JSON" in SYSTEM_PROMPT.upper()

@@ -129,9 +129,16 @@ class RepoTools:
         return f"EXIT_CODE={proc.returncode}\n{combined[-16000:]}"
 
     def run_targeted_tests(self, test_files: list[str]) -> str:
+        if not self.test_command.strip():
+            return "NO TEST COMMAND CONFIGURED"
         if not test_files:
             return self.run_tests()
-        cmd = f"pytest -q {' '.join(test_files)}"
+        base = self.test_command.strip()
+        if "pytest" in base:
+            prefix = "python -m pytest" if "-m pytest" in base else "pytest"
+            cmd = f"{prefix} -q {' '.join(test_files)}"
+        else:
+            cmd = base
         proc = subprocess.run(
             cmd,
             cwd=self.repo,
