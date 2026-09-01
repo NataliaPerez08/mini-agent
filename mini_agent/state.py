@@ -89,6 +89,8 @@ GENERATE_FINAL_SUMMARY = False
 FAST_PATH_MAX_FILES = 2
 FAST_PATH_MAX_CHARS = 6000
 
+MAX_RELEVANT_SYMBOLS = 8
+
 MAX_CODE_CONTEXT_CHARS: dict[TaskType, int] = {
     TaskType.INSPECT: 4000,
     TaskType.LOCATE: 5000,
@@ -228,24 +230,39 @@ class Progress:
 @dataclass
 class WorkingContext:
     active_snippets: dict[str, str] = field(default_factory=dict)
+    symbol_snippets: dict[str, str] = field(default_factory=dict)
     facts: list[str] = field(default_factory=list)
     modified_files: list[str] = field(default_factory=list)
     test_failures: list[str] = field(default_factory=list)
 
     @property
     def active_code_chars(self) -> int:
+        return sum(len(v) for v in self.active_snippets.values()) + sum(
+            len(v) for v in self.symbol_snippets.values()
+        )
+
+    @property
+    def symbol_context_chars(self) -> int:
+        return sum(len(v) for v in self.symbol_snippets.values())
+
+    @property
+    def full_file_context_chars(self) -> int:
         return sum(len(v) for v in self.active_snippets.values())
 
     @property
     def memory_chars(self) -> int:
         return (
-            sum(len(v) for v in self.active_snippets.values())
-            + sum(len(f) for f in self.facts)
+            sum(len(f) for f in self.facts)
             + sum(len(t) for t in self.test_failures)
         )
 
-    def add_snippet(self, key: str, content: str, budget: int = 8000) -> None:
-        self.active_snippets[key] = content
+    def add_snippet(
+        self, key: str, content: str, budget: int = 8000, is_symbol: bool = False
+    ) -> None:
+        if is_symbol:
+            self.symbol_snippets[key] = content
+        else:
+            self.active_snippets[key] = content
         self._prune(budget)
 
     def add_fact(self, fact: str) -> None:
@@ -266,12 +283,19 @@ class WorkingContext:
         while self.active_code_chars > budget and self.active_snippets:
             oldest_key = next(iter(self.active_snippets))
             content = self.active_snippets.pop(oldest_key)
-            summary = f"[pruned {oldest_key}: {len(content)} chars]"
-            self.facts.append(summary)
+            self.facts.append(f"[pruned {oldest_key}: {len(content)} chars]")
+        while self.active_code_chars > budget and self.symbol_snippets:
+            oldest_key = next(iter(self.symbol_snippets))
+            content = self.symbol_snippets.pop(oldest_key)
+            self.facts.append(f"[pruned {oldest_key}: {len(content)} chars]")
 
     def to_memory_lines(self) -> list[str]:
+        return list(self.facts)
+
+    def to_active_code_lines(self) -> list[str]:
         lines: list[str] = []
         for key, content in self.active_snippets.items():
             lines.append(f"{key}\n{content}")
-        lines.extend(self.facts)
+        for key, content in self.symbol_snippets.items():
+            lines.append(f"{key}\n{content}")
         return lines

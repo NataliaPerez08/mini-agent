@@ -1,4 +1,6 @@
 from mini_agent.repo_map import (
+    MAX_FILES_IN_MAP,
+    MAX_REPO_MAP_CHARS,
     MAX_SYMBOLS_PER_FILE,
     build_repo_map,
     extract_python_symbols,
@@ -274,3 +276,50 @@ class TestRepoMapGoSymbols:
             l for l in repo_map.splitlines() if l.startswith("  ") and "L" in l
         ]
         assert len(symbol_lines) <= 5
+
+
+class TestRepoMapLimits:
+    def _make_big_repo(self, git_repo, n_files=30, syms_per_file=20):
+        for i in range(n_files):
+            lines = ["package main", ""]
+            for j in range(syms_per_file):
+                lines.append(f"func F{i}_{j}() {{}}")
+                lines.append("")
+            (git_repo / f"pkg{i}").mkdir(exist_ok=True)
+            (git_repo / f"pkg{i}" / f"file{i}.go").write_text("\n".join(lines))
+        import subprocess
+
+        subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "big"], cwd=git_repo, check=True)
+        return scan_repository(git_repo)
+
+    def test_repo_map_respects_max_chars(self, git_repo):
+        scan = self._make_big_repo(git_repo)
+        idx = build_symbol_index(git_repo, scan)
+        repo_map = build_repo_map(git_repo, scan, symbol_index=idx)
+        assert len(repo_map) <= MAX_REPO_MAP_CHARS
+
+    def test_repo_map_prioritizes_task_files(self, git_repo):
+        scan = self._make_big_repo(git_repo)
+        idx = build_symbol_index(git_repo, scan)
+        repo_map = build_repo_map(
+            git_repo,
+            scan,
+            symbol_index=idx,
+            task="Corrige F5_3",
+            max_files_in_map=5,
+        )
+        assert "pkg5/file5.go" in repo_map
+
+    def test_repo_map_generic_task_no_priority_inversion(self, git_repo):
+        scan = self._make_big_repo(git_repo, n_files=5)
+        idx = build_symbol_index(git_repo, scan)
+        repo_map = build_repo_map(git_repo, scan, symbol_index=idx)
+        assert len(repo_map) <= MAX_REPO_MAP_CHARS
+        assert "SYMBOLS" in repo_map
+
+    def test_max_repo_map_chars_constant(self):
+        assert MAX_REPO_MAP_CHARS == 5000
+
+    def test_max_files_in_map_constant(self):
+        assert MAX_FILES_IN_MAP == 60

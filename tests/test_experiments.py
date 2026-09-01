@@ -381,3 +381,159 @@ class TestIntegrationInspectRun:
         run_end = trace[-1]
         assert run_end["success"] is True
         assert run_end["final_state"] == "done"
+
+
+class TestSymbolMetrics:
+    def test_run_summary_has_symbol_fields(self, git_repo_with_files: Path) -> None:
+        from mini_agent.agent import CodingAgent
+        from tests.conftest import StubModel
+
+        out = git_repo_with_files.parent / "experiments"
+        run_id = generate_run_id()
+        logger = ExperimentLogger(run_id, out, enabled=True)
+
+        model = StubModel(
+            responses=['{"action": "finish", "summary": "Done"}']
+        )
+        agent = CodingAgent(
+            git_repo_with_files,
+            model,
+            test_command="",
+            experiment_logger=logger,
+        )
+        agent.run("Revisa")
+
+        runs = _read_jsonl(out / "runs.jsonl")
+        rec = runs[0]
+        assert "symbol_index_files" in rec
+        assert "symbol_index_symbols" in rec
+        assert "symbol_index_errors" in rec
+        assert "symbol_index_truncated" in rec
+        assert "symbol_reads" in rec
+        assert "full_file_reads" in rec
+        assert "symbol_context_chars" in rec
+        assert "full_file_context_chars" in rec
+
+    def test_symbol_index_trace_event(self, git_repo_with_files: Path) -> None:
+        from mini_agent.agent import CodingAgent
+        from tests.conftest import StubModel
+
+        out = git_repo_with_files.parent / "experiments"
+        run_id = generate_run_id()
+        logger = ExperimentLogger(run_id, out, enabled=True)
+
+        model = StubModel(
+            responses=['{"action": "finish", "summary": "Done"}']
+        )
+        agent = CodingAgent(
+            git_repo_with_files,
+            model,
+            test_command="",
+            experiment_logger=logger,
+        )
+        agent.run("Revisa")
+
+        trace = _read_jsonl(logger.trace_path)
+        si_events = [e for e in trace if e["type"] == "symbol_index"]
+        assert len(si_events) == 1
+        evt = si_events[0]
+        assert "files_parsed" in evt
+        assert "symbols" in evt
+        assert "errors" in evt
+        assert "truncated" in evt
+
+    def test_symbol_read_trace_event(self, git_repo: Path) -> None:
+        from mini_agent.agent import CodingAgent
+        from tests.conftest import StubModel
+
+        (git_repo / "fw").mkdir()
+        (git_repo / "fw" / "service.go").write_text(
+            "package fw\n\nfunc ApplyPolicy() error {\n\treturn nil\n}\n"
+        )
+        subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "go"], cwd=git_repo, check=True)
+
+        out = git_repo.parent / "experiments"
+        run_id = generate_run_id()
+        logger = ExperimentLogger(run_id, out, enabled=True)
+
+        model = StubModel(
+            responses=[
+                '{"action": "read_symbol", "path": "fw/service.go", "symbol": "ApplyPolicy"}',
+                '{"action": "finish", "summary": "Done"}',
+            ]
+        )
+        agent = CodingAgent(
+            git_repo,
+            model,
+            test_command="",
+            experiment_logger=logger,
+        )
+        result = agent.run("Revisa ApplyPolicy")
+
+        trace = _read_jsonl(logger.trace_path)
+        sr_events = [e for e in trace if e["type"] == "symbol_read"]
+        assert len(sr_events) == 1
+        evt = sr_events[0]
+        assert evt["path"] == "fw/service.go"
+        assert evt["symbol"] == "ApplyPolicy"
+        assert evt["success"] is True
+
+        assert result.symbol_reads == 1
+        assert result.full_file_reads == 0
+        assert result.symbol_context_chars > 0
+
+    def test_full_file_read_not_counted_as_symbol(self, git_repo_with_files: Path) -> None:
+        from mini_agent.agent import CodingAgent
+        from tests.conftest import StubModel
+
+        out = git_repo_with_files.parent / "experiments"
+        run_id = generate_run_id()
+        logger = ExperimentLogger(run_id, out, enabled=True)
+
+        model = StubModel(
+            responses=[
+                '{"action": "read_file", "path": "src/app.py"}',
+                '{"action": "finish", "summary": "Done"}',
+            ]
+        )
+        agent = CodingAgent(
+            git_repo_with_files,
+            model,
+            test_command="",
+            experiment_logger=logger,
+        )
+        result = agent.run("Read app.py")
+
+        assert result.symbol_reads == 0
+        assert result.full_file_reads == 1
+        assert result.full_file_context_chars > 0
+
+    def test_duplicate_action_trace_event(self, git_repo_with_files: Path) -> None:
+        from mini_agent.agent import CodingAgent
+        from tests.conftest import StubModel
+
+        out = git_repo_with_files.parent / "experiments"
+        run_id = generate_run_id()
+        logger = ExperimentLogger(run_id, out, enabled=True)
+
+        model = StubModel(
+            responses=[
+                '{"action": "read_file", "path": "src/app.py"}',
+                '{"action": "read_file", "path": "src/app.py"}',
+                '{"action": "finish", "summary": "Done"}',
+            ]
+        )
+        agent = CodingAgent(
+            git_repo_with_files,
+            model,
+            test_command="",
+            experiment_logger=logger,
+        )
+        agent.run("Read twice")
+
+        trace = _read_jsonl(logger.trace_path)
+        dup_events = [e for e in trace if e["type"] == "duplicate_action"]
+        assert len(dup_events) == 1
+        assert dup_events[0]["action"] == "read_file"
+        assert dup_events[0]["path"] == "src/app.py"

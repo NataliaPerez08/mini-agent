@@ -1,6 +1,7 @@
 from mini_agent.context import (
     SYSTEM_PROMPT,
     build_initial_context,
+    build_state_prompt,
     build_turn_prompt,
     git_status,
 )
@@ -76,6 +77,53 @@ class TestBuildTurnPrompt:
         assert "iter 12" in prompt
         assert "iter 11" not in prompt
         assert "iter 12" in prompt
+
+
+class TestBuildStatePrompt:
+    def test_tool_result_deduped_against_active_code(self):
+        content = "def ApplyPolicy() { return 42 }"
+        snippet = f"read_symbol svc.go::ApplyPolicy\n{content}"
+        prompt = build_state_prompt(
+            task="T",
+            repo_map="svc.go",
+            memory=[],
+            tool_result=content,
+            status="<clean>",
+            state="read",
+            active_code=[snippet],
+        )
+        assert prompt.count(content) == 1
+        assert "ACTIVE CODE" in prompt
+        assert "LAST TOOL RESULT" not in prompt
+
+    def test_tool_result_shown_when_not_in_active_code(self):
+        prompt = build_state_prompt(
+            task="T",
+            repo_map="",
+            memory=[],
+            tool_result="ERROR: file not found",
+            status="<clean>",
+            state="read",
+            active_code=[],
+        )
+        assert "LAST TOOL RESULT" in prompt
+        assert "ERROR: file not found" in prompt
+
+    def test_tool_result_shown_in_repair_state_even_if_in_active_code(self):
+        content = "patch applied"
+        snippet = f"apply_patch\n{content}"
+        prompt = build_state_prompt(
+            task="T",
+            repo_map="",
+            memory=[],
+            tool_result=content,
+            status="<clean>",
+            state="repair",
+            plan={"goal": "fix", "files": []},
+            test_failure="test failed",
+            active_code=[snippet],
+        )
+        assert "LAST TOOL RESULT" in prompt
 
 
 class TestBuildInitialContext:

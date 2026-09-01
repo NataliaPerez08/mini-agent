@@ -22,7 +22,7 @@ from .experiments import (
     now_iso,
 )
 from .model import OpenAICompatModel, extract_json_object
-from .repo_map import build_repo_map
+from .repo_map import MAX_REPO_MAP_CHARS, MAX_REPO_MAP_CHARS_INSPECT, build_repo_map
 from .scanner import scan_repository
 from .state import (
     ALLOWED_ACTIONS,
@@ -30,6 +30,7 @@ from .state import (
     FAST_PATH_MAX_CHARS,
     MAX_CODE_CONTEXT_CHARS,
     MAX_READ_ACTIONS,
+    MAX_RELEVANT_SYMBOLS,
     MAX_REPAIR_CYCLES,
     AgentState,
     Progress,
@@ -37,10 +38,9 @@ from .state import (
     WorkingContext,
     choose_inspection_files,
     classify_task,
-    validate_action,
     validate_transition,
 )
-from .symbols import build_symbol_index
+from .symbols import build_symbol_index, rank_symbols_for_task, reindex_files
 from .tools import RepoTools
 from .version import HARNESS_VERSION
 
@@ -171,6 +171,9 @@ def _count_diff_lines(diff_text: str) -> tuple[int, int]:
     return added, removed
 
 
+_READ_ACTIONS = frozenset({"read_file", "read_symbol", "search_code"})
+
+
 @dataclass
 class AgentResult:
     summary: str
@@ -186,11 +189,23 @@ class AgentResult:
     elapsed: float = 0.0
     task_type: str = ""
     final_state: str = ""
+    stop_reason: str = ""
     repo_map_chars: int = 0
     active_code_chars: int = 0
     working_memory_chars: int = 0
     system_prompt_chars: int = 0
     user_prompt_chars: int = 0
+    total_prompt_chars_sent: int = 0
+    max_prompt_chars: int = 0
+    symbol_index_files: int = 0
+    symbol_index_symbols: int = 0
+    symbol_index_errors: int = 0
+    symbol_index_truncated: bool = False
+    symbol_index_elapsed_seconds: float = 0.0
+    symbol_reads: int = 0
+    full_file_reads: int = 0
+    symbol_context_chars: int = 0
+    full_file_context_chars: int = 0
 
 
 class CodingAgent:
@@ -256,6 +271,18 @@ class CodingAgent:
             active_code_chars=result.active_code_chars,
             working_memory_chars=result.working_memory_chars,
             elapsed_seconds=result.elapsed,
+            total_prompt_chars_sent=result.total_prompt_chars_sent,
+            last_prompt_chars=result.user_prompt_chars,
+            max_prompt_chars=result.max_prompt_chars,
+            symbol_index_files=result.symbol_index_files,
+            symbol_index_symbols=result.symbol_index_symbols,
+            symbol_index_errors=result.symbol_index_errors,
+            symbol_index_truncated=result.symbol_index_truncated,
+            symbol_index_elapsed_seconds=result.symbol_index_elapsed_seconds,
+            symbol_reads=result.symbol_reads,
+            full_file_reads=result.full_file_reads,
+            symbol_context_chars=result.symbol_context_chars,
+            full_file_context_chars=result.full_file_context_chars,
         )
         run = ExperimentRun(
             run_id=self._experiment_logger.run_id,
@@ -267,6 +294,7 @@ class CodingAgent:
             success=(result.final_state == "done"),
             final_state=result.final_state,
             metrics=metrics,
+            stop_reason=result.stop_reason,
             git_commit=git_commit,
             repo_dirty=repo_dirty,
             temperature=getattr(self.model, "temperature", None),
@@ -282,7 +310,16 @@ class CodingAgent:
         self._vprint(f"[verbose] languages: {langs or '<none>'}")
         self._vprint(f"[verbose] important_files: {len(self.scan.important_files)}")
         self._vprint(f"[verbose] tests: {len(self.scan.test_files)}")
-        self._vprint(f"[verbose] indexed_symbols: {len(self.symbol_index.symbols)}")
+        self._vprint(f"[verbose] symbols: {len(self.symbol_index.symbols)}")
+        self._vprint(
+            f"[verbose] symbol_index: {self.symbol_index.index_elapsed_seconds:.2f}s"
+            if self.symbol_index.index_elapsed_seconds
+            else "[verbose] symbol_index: 0.00s"
+        )
+        if self.symbol_index.errors:
+            self._vprint(f"[verbose] symbol_index_errors: {self.symbol_index.errors}")
+        if self.symbol_index.truncated:
+            self._vprint("[verbose] symbol_index_truncated: true")
         symbol_count = sum(
             1 for line in self.repo_map.splitlines() if line.startswith("  ")
         )
@@ -334,6 +371,12 @@ class CodingAgent:
         self._vprint(
             f"[verbose]   active_code_chars: {self.working_context.active_code_chars}"
         )
+        self._vprint(
+            f"[verbose]   symbol_context_chars: {self.working_context.symbol_context_chars}"
+        )
+        self._vprint(
+            f"[verbose]   full_file_context_chars: {self.working_context.full_file_context_chars}"
+        )
         self._vprint(f"[verbose]   memory_chars: {self.working_context.memory_chars}")
         self._vprint(f"[verbose]   system_prompt_chars: {len(system_prompt)}")
         self._vprint(f"[verbose]   user_prompt_chars: {len(user_prompt)}")
@@ -356,27 +399,50 @@ class CodingAgent:
         self._vprint(f"working_memory_chars: {result.working_memory_chars}")
         self._vprint(f"system_prompt_chars: {result.system_prompt_chars}")
         self._vprint(f"user_prompt_chars: {result.user_prompt_chars}")
+        self._vprint(f"total_prompt_chars_sent: {result.total_prompt_chars_sent}")
+        self._vprint(f"max_prompt_chars: {result.max_prompt_chars}")
+        self._vprint(f"stop_reason: {result.stop_reason}")
         self._vprint(f"elapsed: {result.elapsed:.1f}s")
+        self._vprint("")
+        self._vprint("[symbol metrics]")
+        self._vprint(f"indexed_symbols: {result.symbol_index_symbols}")
+        self._vprint(f"symbol_reads: {result.symbol_reads}")
+        self._vprint(f"full_file_reads: {result.full_file_reads}")
+        self._vprint(f"symbol_context_chars: {result.symbol_context_chars}")
+        self._vprint(f"full_file_context_chars: {result.full_file_context_chars}")
 
     def run(self, task: str) -> AgentResult:
         start_time = time.time()
+        task_type = classify_task(task)
+        self.repo_map = build_repo_map(
+            self.repo,
+            self.scan,
+            symbol_index=self.symbol_index,
+            task=task,
+            max_chars=(
+                MAX_REPO_MAP_CHARS_INSPECT
+                if task_type == TaskType.INSPECT
+                else MAX_REPO_MAP_CHARS
+            ),
+        )
         self._print_preflight()
         self._vprint("\n[verbose] === AGENT START ===")
         self._vprint(f"[verbose] repo: {self.repo}")
         self._vprint(f"[verbose] task: {task}")
 
-        task_type = classify_task(task)
         soft_limit, hard_limit = _BUDGETS[task_type]
         max_read = MAX_READ_ACTIONS[task_type]
         effective_hard_limit = min(hard_limit, self.max_iterations)
         code_budget = MAX_CODE_CONTEXT_CHARS.get(task_type, 8000)
 
         keywords = _extract_keywords(task)
-        candidates = self.symbol_index.find_candidates(keywords)
-        symbol_candidates_str = format_symbol_candidates(candidates[:10])
+        candidates = rank_symbols_for_task(task, self.symbol_index, limit=MAX_RELEVANT_SYMBOLS)
+        if not candidates:
+            candidates = self.symbol_index.find_candidates(keywords)[:MAX_RELEVANT_SYMBOLS]
+        symbol_candidates_str = format_symbol_candidates(candidates[:MAX_RELEVANT_SYMBOLS])
         if candidates and self.verbose:
-            self._vprint(f"[verbose] symbol_candidates: {len(candidates)} found")
-            for c in candidates[:10]:
+            self._vprint("[verbose] [relevant symbols]")
+            for c in candidates[:MAX_RELEVANT_SYMBOLS]:
                 self._vprint(
                     f"[verbose]   {c.path}::{c.name} L{c.start_line}-L{c.end_line}"
                 )
@@ -413,6 +479,14 @@ class CodingAgent:
             model=getattr(self.model, "model", "unknown"),
             harness_version=HARNESS_VERSION,
         )
+        self._log_event(
+            "symbol_index",
+            files_parsed=self.symbol_index.files_parsed,
+            symbols=len(self.symbol_index.symbols),
+            errors=self.symbol_index.errors,
+            truncated=self.symbol_index.truncated,
+            duration_seconds=self.symbol_index.index_elapsed_seconds,
+        )
         self._transition(AgentState.DISCOVER, state)
 
         llm_calls = 0
@@ -424,12 +498,34 @@ class CodingAgent:
         finish_summary = ""
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        total_prompt_chars = 0
+        max_prompt_chars = 0
         repeated: list[str] = []
+        consecutive_duplicates = 0
         last_system_prompt_chars = 0
         last_user_prompt_chars = 0
+        stop_reason = ""
+        budget_exhausted_logged = False
+        budget_recovery_used = False
+        symbol_reads = 0
+        full_file_reads = 0
+        symbol_context_chars = 0
+        full_file_context_chars = 0
 
         max_loop = effective_hard_limit * 3 + 10
         loop_count = 0
+
+        def duplicate_feedback(soft_msg: str) -> str:
+            nonlocal consecutive_duplicates
+            consecutive_duplicates += 1
+            if consecutive_duplicates >= 2:
+                return (
+                    "ERROR: you repeated an action that was already rejected. "
+                    "Do NOT repeat it again. You MUST answer now using the "
+                    "context already loaded. Return exactly one action: "
+                    '{"action": "finish", "summary": "your answer"}'
+                )
+            return soft_msg
 
         result: AgentResult | None = None
 
@@ -437,12 +533,14 @@ class CodingAgent:
             while state not in (AgentState.DONE, AgentState.FAILED):
                 loop_count += 1
                 if loop_count > max_loop:
+                    stop_reason = "max_iterations"
                     prev = state
                     state = AgentState.FAILED
                     self._transition(prev, state)
                     break
 
                 if llm_calls >= effective_hard_limit:
+                    stop_reason = "llm_call_budget_exhausted"
                     prev = state
                     state = AgentState.FAILED
                     self._transition(prev, state)
@@ -480,12 +578,14 @@ class CodingAgent:
                     )
 
                     if passed:
+                        stop_reason = "completed"
                         prev = state
                         state = AgentState.DONE
                         self._transition(prev, state)
                     else:
                         test_failure = test_output[-4000:]
                         if repair_cycles >= MAX_REPAIR_CYCLES:
+                            stop_reason = "test_failure"
                             prev = state
                             state = AgentState.FAILED
                             self._transition(prev, state)
@@ -503,17 +603,61 @@ class CodingAgent:
                     self._transition(prev, state)
                     continue
 
+                # --- READ budget guard --- #
+                reads_remaining = max_read - self.progress.read_actions
+                budget_exhausted = (
+                    reads_remaining <= 0
+                    and state in (AgentState.READ, AgentState.DISCOVER, AgentState.REPAIR)
+                )
+
+                if budget_exhausted and not budget_exhausted_logged:
+                    self._log_event(
+                        "budget_exhausted",
+                        budget="read_actions",
+                        used=self.progress.read_actions,
+                        limit=max_read,
+                        state=state.value,
+                    )
+                    budget_exhausted_logged = True
+                    self._vprint(
+                        f"[verbose] READ BUDGET EXHAUSTED: "
+                        f"{self.progress.read_actions}/{max_read} used"
+                    )
+
+                # Compute effective (filtered) actions
+                allowed = set(ALLOWED_ACTIONS.get(state, set()))
+                if budget_exhausted:
+                    allowed -= _READ_ACTIONS
+                    if task_type in (TaskType.INSPECT, TaskType.LOCATE) and state in (
+                        AgentState.READ,
+                        AgentState.DISCOVER,
+                    ):
+                            has_context = (
+                                self.working_context.active_code_chars > 0
+                                or len(self.progress.files_read) > 0
+                            )
+                            if not has_context:
+                                stop_reason = "read_budget_exhausted"
+                                prev = state
+                                state = AgentState.FAILED
+                                self._transition(prev, state)
+                                break
+                            allowed = {"finish"}
+
                 llm_calls += 1
                 self._vprint(
                     f"\n[verbose] --- iteration {llm_calls}/{effective_hard_limit} ---"
                 )
                 self._vprint(f"[verbose] state: {state.value.upper()}")
 
-                allowed = ALLOWED_ACTIONS.get(state, set())
                 allowed_str = ", ".join(sorted(allowed)) if allowed else "<deterministic>"
                 self._vprint(f"[verbose] allowed_actions: {allowed_str}")
 
-                system_prompt = get_system_prompt(state.value)
+                system_prompt = get_system_prompt(
+                    state.value,
+                    budget_exhausted=budget_exhausted,
+                    task_type=task_type.value,
+                )
                 user_prompt = build_state_prompt(
                     task=task,
                     repo_map=self.repo_map,
@@ -525,14 +669,18 @@ class CodingAgent:
                     plan=plan,
                     test_failure=test_failure,
                     symbol_candidates=symbol_candidates_str,
+                    budget_exhausted=budget_exhausted,
+                    active_code=self.working_context.to_active_code_lines(),
                 )
 
-                if llm_calls >= soft_limit:
+                if llm_calls >= soft_limit and not budget_exhausted:
                     user_prompt += BUDGET_WARNING
 
                 self._print_context_breakdown(system_prompt, user_prompt)
                 last_system_prompt_chars = len(system_prompt)
                 last_user_prompt_chars = len(user_prompt)
+                total_prompt_chars += len(user_prompt)
+                max_prompt_chars = max(max_prompt_chars, len(user_prompt))
 
                 llm_start = time.time()
                 raw = self.model.chat(system_prompt, user_prompt)
@@ -549,13 +697,42 @@ class CodingAgent:
                     if isinstance(usage, dict)
                     else None
                 )
+
+                # Per-llm-call context breakdown
+                task_chars = len(task)
+                repo_map_c = len(self.repo_map)
+                active_code_c = self.working_context.active_code_chars
+                working_mem_c = self.working_context.memory_chars
+                relevant_sym_c = len(symbol_candidates_str)
+                tool_schema_c = len(allowed_str)
+                instructions_c = len(system_prompt)
+                total_prompt_c = len(system_prompt) + len(user_prompt)
+                other_c = max(
+                    0,
+                    total_prompt_c
+                    - task_chars
+                    - repo_map_c
+                    - active_code_c
+                    - working_mem_c
+                    - relevant_sym_c
+                    - tool_schema_c
+                    - instructions_c,
+                )
                 self._log_event(
                     "llm_call",
                     call_index=llm_calls,
                     state=state.value,
+                    prompt_chars=total_prompt_c,
                     prompt_tokens=pt,
                     completion_tokens=ct,
-                    prompt_chars=len(user_prompt),
+                    task_chars=task_chars,
+                    repo_map_chars=repo_map_c,
+                    active_code_chars=active_code_c,
+                    working_memory_chars=working_mem_c,
+                    relevant_symbols_chars=relevant_sym_c,
+                    tool_schema_chars=tool_schema_c,
+                    instructions_chars=instructions_c,
+                    other_context_chars=other_c,
                     latency_seconds=round(llm_latency, 2),
                 )
 
@@ -567,13 +744,47 @@ class CodingAgent:
                 signature = str(action)
                 repeated.append(signature)
                 if len(repeated) >= 3 and repeated[-1] == repeated[-2] == repeated[-3]:
-                    msg = "ERROR: identical action repeated 3 times. Choose a different approach."
+                    msg = (
+                        "ERROR: identical action repeated 3 times. Do NOT repeat it. "
+                        "You MUST answer now using the context already loaded. "
+                        'Return exactly one action: {"action": "finish", "summary": "your answer"}'
+                    )
                     self.last_tool_result = msg
                     self._vprint(f"[verbose] WARNING: {msg}")
                     self.working_context.add_fact(msg)
                     continue
 
-                if not validate_action(state, kind):
+                # Validate action against effective (filtered) set
+                if kind not in allowed:
+                    # Budget-exhausted invalid read action
+                    if budget_exhausted and kind in _READ_ACTIONS:
+                        self._log_event(
+                            "invalid_action",
+                            action=kind,
+                            reason="read_budget_exhausted",
+                        )
+                        self._vprint(
+                            f"[verbose] invalid action {kind}: "
+                            "read budget exhausted"
+                        )
+                        if (
+                            task_type == TaskType.INSPECT
+                            and not budget_recovery_used
+                        ):
+                            budget_recovery_used = True
+                            self.last_tool_result = (
+                                "READ BUDGET EXHAUSTED. "
+                                "You must finish with existing context. "
+                                "Do not request read_file or search_code."
+                            )
+                            continue
+                        stop_reason = "invalid_action"
+                        prev = state
+                        state = AgentState.FAILED
+                        self._transition(prev, state)
+                        break
+
+                    # Existing EDIT -> READ transition for read actions
                     if state == AgentState.EDIT and kind in ("read_file", "read_symbol"):
                         self._vprint(f"[verbose] {kind} in EDIT, transitioning to READ")
                         if validate_transition(state, AgentState.READ):
@@ -581,15 +792,22 @@ class CodingAgent:
                             state = AgentState.READ
                             self._transition(prev, state)
                         continue
-                    error = f"ERROR: action {kind!r} is not allowed in state {state.value}"
+                    error = f"ERROR: action {kind!r} is not allowed in state {state.value}. Allowed: {', '.join(sorted(allowed))}"
                     self._vprint(f"[verbose] {error}")
                     self.working_context.add_fact(error)
+                    self.last_tool_result = error
+                    self._log_event(
+                        "invalid_action", action=kind, reason="not_allowed_in_state"
+                    )
                     continue
+
+                consecutive_duplicates = 0
 
                 if kind == "finish":
                     finish_summary = str(action.get("summary", "Done."))
                     self._vprint(f"[verbose] FINISH: {finish_summary}")
                     self._log_event("finish", state=state.value, iterations=llm_calls)
+                    stop_reason = "completed"
                     prev = state
                     state = AgentState.DONE
                     self._transition(prev, state)
@@ -600,30 +818,27 @@ class CodingAgent:
                     start = int(action.get("start", 1))
                     end = int(action.get("end", 220))
 
-                    if self.progress.read_actions >= max_read:
-                        msg = f"ERROR: max read actions ({max_read}) reached. Use existing context or finish."
-                        self._vprint(f"[verbose] {msg}")
-                        self.working_context.add_fact(msg)
-                        continue
-
                     if not self.progress.record_read(path):
-                        msg = (
+                        msg = duplicate_feedback(
                             "The requested file/range was already read and has not changed. "
                             "Use existing context or choose another action."
                         )
                         self._vprint(f"[verbose] WARNING: duplicate read {path}")
                         self.working_context.add_fact(msg)
+                        self._log_event("duplicate_action", action="read_file", path=path)
                         continue
 
                     self.progress.read_actions += 1
-                    result = self.tools.read_file(path, start, end)
+                    full_file_reads += 1
+                    tool_output = self.tools.read_file(path, start, end)
                     tool_calls += 1
-                    compact = result[-4000:]
+                    compact = tool_output[-4000:]
                     self.last_tool_result = compact
                     self.working_context.add_snippet(
                         f"read_file {path}", compact, budget=code_budget
                     )
-                    self._vprint(f"[verbose] read_file: {path} ({len(result)} chars)")
+                    full_file_context_chars += len(compact)
+                    self._vprint(f"[verbose] read_file: {path} ({len(tool_output)} chars)")
 
                     self._log_event(
                         "tool_call",
@@ -631,20 +846,16 @@ class CodingAgent:
                         state=state.value,
                         success=True,
                     )
-                    self._log_event("file_read", path=path, chars=len(result))
+                    self._log_event("file_read", path=path, chars=len(tool_output))
 
                 elif kind == "read_symbol":
                     path = str(action.get("path", ""))
                     symbol = str(action.get("symbol", ""))
-
-                    if self.progress.read_actions >= max_read:
-                        msg = f"ERROR: max read actions ({max_read}) reached. Use existing context or finish."
-                        self._vprint(f"[verbose] {msg}")
-                        self.working_context.add_fact(msg)
-                        continue
+                    sym_kind = action.get("kind")
+                    sym_receiver = action.get("receiver")
 
                     if not self.progress.record_symbol_read(path, symbol):
-                        msg = (
+                        msg = duplicate_feedback(
                             f"The symbol {symbol} in {path} was already read. "
                             "Use existing context or choose another action."
                         )
@@ -652,52 +863,85 @@ class CodingAgent:
                             f"[verbose] WARNING: duplicate symbol read {path}::{symbol}"
                         )
                         self.working_context.add_fact(msg)
+                        self._log_event(
+                            "duplicate_action", action="read_symbol", path=path, symbol=symbol
+                        )
                         continue
 
                     self.progress.read_actions += 1
-                    result = self.tools.read_symbol(path, symbol)
+                    symbol_reads += 1
+                    tool_output = self.tools.read_symbol(
+                        path, symbol, kind=sym_kind, receiver=sym_receiver
+                    )
                     tool_calls += 1
-                    compact = result[-4000:]
+                    compact = tool_output[-4000:]
                     self.last_tool_result = compact
                     self.working_context.add_snippet(
-                        f"read_symbol {path}::{symbol}", compact, budget=code_budget
+                        f"read_symbol {path}::{symbol}",
+                        compact,
+                        budget=code_budget,
+                        is_symbol=True,
                     )
+                    symbol_context_chars += len(compact)
                     self._vprint(
-                        f"[verbose] read_symbol: {path}::{symbol} ({len(result)} chars)"
+                        f"[verbose] [read_symbol] {path}::{symbol}"
+                        f" ({len(tool_output)} chars)"
                     )
 
+                    matched = self.symbol_index.exact(path, symbol)
+                    if sym_kind:
+                        matched = [s for s in matched if s.kind == sym_kind]
+                    if sym_receiver and matched:
+                        matched = [
+                            s for s in matched if s.receiver and s.receiver == sym_receiver
+                        ]
+
+                    self._log_event(
+                        "symbol_read",
+                        path=path,
+                        symbol=symbol,
+                        kind=matched[0].kind if matched else "",
+                        start_line=matched[0].start_line if matched else 0,
+                        end_line=matched[0].end_line if matched else 0,
+                        chars=len(tool_output),
+                        success=not tool_output.startswith("ERROR"),
+                    )
                     self._log_event(
                         "tool_call",
                         action="read_symbol",
                         state=state.value,
+                        path=path,
+                        symbol=symbol,
                         success=True,
                     )
-                    self._log_event("file_read", path=path, chars=len(result))
 
                 elif kind == "search_code":
                     query = str(action.get("query", ""))
                     path = str(action.get("path", "."))
 
                     if not self.progress.record_search(query):
-                        msg = (
+                        msg = duplicate_feedback(
                             "This search was already performed. "
                             "Use existing results or choose another action."
                         )
                         self._vprint(f"[verbose] WARNING: duplicate search {query}")
                         self.working_context.add_fact(msg)
+                        self._log_event(
+                            "duplicate_action", action="search_code", query=query
+                        )
                         continue
 
-                    result = self.tools.search_code(query, path)
+                    tool_output = self.tools.search_code(query, path)
                     tool_calls += 1
-                    compact = result[-4000:]
+                    compact = tool_output[-4000:]
                     self.last_tool_result = compact
                     self.working_context.add_snippet(
                         f"search_code {query}", compact, budget=code_budget
                     )
-                    self._vprint(f"[verbose] search_code: {query} ({len(result)} chars)")
+                    self._vprint(f"[verbose] search_code: {query} ({len(tool_output)} chars)")
 
                     match_count = len(
-                        [l for l in result.strip().splitlines() if l]
+                        [l for l in tool_output.strip().splitlines() if l]
                     )
                     self._log_event(
                         "tool_call",
@@ -719,13 +963,13 @@ class CodingAgent:
 
                 elif kind == "apply_patch":
                     patch_text = str(action.get("patch", ""))
-                    result = self.tools.apply_patch(patch_text)
+                    tool_output = self.tools.apply_patch(patch_text)
                     tool_calls += 1
 
-                    if result.startswith("PATCH APPLIED"):
+                    if tool_output.startswith("PATCH APPLIED"):
                         self.progress.record_patch()
-                        patched_files = self._extract_patched_files(result)
-                        compact = result[-4000:]
+                        patched_files = self._extract_patched_files(tool_output)
+                        compact = tool_output[-4000:]
                         self.last_tool_result = compact
                         self.working_context.add_snippet(
                             "apply_patch", compact, budget=code_budget
@@ -734,7 +978,23 @@ class CodingAgent:
                             self.working_context.add_modified_file(pf)
                         self._vprint("[verbose] patch applied successfully")
 
-                        added, removed = _count_diff_lines(result)
+                        self.symbol_index = reindex_files(
+                            self.repo, self.symbol_index, patched_files
+                        )
+                        self.tools.symbol_index = self.symbol_index
+                        self.repo_map = build_repo_map(
+                            self.repo,
+                            self.scan,
+                            symbol_index=self.symbol_index,
+                            task=task,
+                            max_chars=(
+                                MAX_REPO_MAP_CHARS_INSPECT
+                                if task_type == TaskType.INSPECT
+                                else MAX_REPO_MAP_CHARS
+                            ),
+                        )
+
+                        added, removed = _count_diff_lines(tool_output)
                         self._log_event(
                             "tool_call",
                             action="apply_patch",
@@ -756,7 +1016,7 @@ class CodingAgent:
                             state = AgentState.VERIFY
                             self._transition(prev, state)
                     else:
-                        compact = result[-4000:]
+                        compact = tool_output[-4000:]
                         self.last_tool_result = compact
                         self.working_context.add_fact(f"apply_patch FAILED\n{compact}")
                         self._vprint("[verbose] patch FAILED")
@@ -799,6 +1059,8 @@ class CodingAgent:
             self._vprint(
                 f"\n[verbose] {state.value.upper()} after {llm_calls} LLM call{'s' if llm_calls != 1 else ''}"
             )
+            if stop_reason:
+                self._vprint(f"[verbose] stop_reason: {stop_reason}")
 
             result = AgentResult(
                 summary=summary,
@@ -814,11 +1076,23 @@ class CodingAgent:
                 elapsed=elapsed,
                 task_type=task_type.value,
                 final_state=state.value,
+                stop_reason=stop_reason,
                 repo_map_chars=len(self.repo_map),
                 active_code_chars=self.working_context.active_code_chars,
                 working_memory_chars=self.working_context.memory_chars,
                 system_prompt_chars=last_system_prompt_chars,
                 user_prompt_chars=last_user_prompt_chars,
+                total_prompt_chars_sent=total_prompt_chars,
+                max_prompt_chars=max_prompt_chars,
+                symbol_index_files=self.symbol_index.files_parsed,
+                symbol_index_symbols=len(self.symbol_index.symbols),
+                symbol_index_errors=self.symbol_index.errors,
+                symbol_index_truncated=self.symbol_index.truncated,
+                symbol_index_elapsed_seconds=self.symbol_index.index_elapsed_seconds,
+                symbol_reads=symbol_reads,
+                full_file_reads=full_file_reads,
+                symbol_context_chars=symbol_context_chars,
+                full_file_context_chars=full_file_context_chars,
             )
             self._print_metrics(result)
             return result
@@ -837,6 +1111,7 @@ class CodingAgent:
                     "run_end",
                     success=(result.final_state == "done"),
                     final_state=result.final_state,
+                    stop_reason=result.stop_reason,
                     elapsed_seconds=round(result.elapsed, 2),
                 )
                 self._save_experiment_summary(
@@ -848,6 +1123,7 @@ class CodingAgent:
                     "run_end",
                     success=False,
                     final_state="error",
+                    stop_reason="exception",
                     elapsed_seconds=round(elapsed, 2),
                 )
 

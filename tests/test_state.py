@@ -433,17 +433,15 @@ class TestWorkingContext:
         ctx = WorkingContext()
         ctx.add_snippet("s1", "abc", budget=8000)
         ctx.add_fact("fact123")
-        assert ctx.memory_chars == 3 + 7
+        assert ctx.memory_chars == 7
 
     def test_to_memory_lines(self):
         ctx = WorkingContext()
         ctx.add_snippet("read_file a.go", "content", budget=8000)
         ctx.add_fact("some fact")
         lines = ctx.to_memory_lines()
-        assert len(lines) == 2
-        assert "read_file a.go" in lines[0]
-        assert "content" in lines[0]
-        assert lines[1] == "some fact"
+        assert len(lines) == 1
+        assert lines[0] == "some fact"
 
     def test_add_modified_file(self):
         ctx = WorkingContext()

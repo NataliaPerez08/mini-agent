@@ -46,7 +46,7 @@ class TestCodingAgentRun:
         agent = CodingAgent(git_repo_with_files, model, "")
         result = agent.run("Search for hello function.")
         assert result.iterations == 2
-        assert len(agent.memory) == 1
+        assert len(agent.working_context.to_active_code_lines()) == 1
 
     def test_max_iterations_without_finish(self, git_repo_with_files):
         responses = [
@@ -106,7 +106,7 @@ class TestCodingAgentRun:
         assert result.final_state == "done"
         assert result.patches == 1
         assert result.tests_run == 1
-        assert any("PATCH APPLIED" in m for m in agent.memory)
+        assert any("PATCH APPLIED" in m for m in agent.working_context.to_active_code_lines())
         assert any("EXIT_CODE=0" in m for m in agent.memory)
 
     def test_apply_patch_failed_no_verification(self, git_repo_with_files):
@@ -139,9 +139,10 @@ class TestCodingAgentRun:
         )
         agent = CodingAgent(git_repo_with_files, model, "")
         agent.run("Read two files.")
-        assert len(agent.memory) == 2
-        assert "read_file" in agent.memory[0]
-        assert "read_file" in agent.memory[1]
+        code_lines = agent.working_context.to_active_code_lines()
+        assert len(code_lines) == 2
+        assert "read_file" in code_lines[0]
+        assert "read_file" in code_lines[1]
 
     def test_model_receives_system_prompt(self, git_repo_with_files):
         model = StubModel(
@@ -219,6 +220,38 @@ class TestCodingAgentRun:
         result = agent.run("Read the file twice.")
         assert result.iterations == 3
         assert any("already read" in m for m in agent.memory)
+
+    def test_duplicate_escalates_to_imperative_finish(self, git_repo_with_files):
+        model = StubModel(
+            [
+                json.dumps({"action": "read_file", "path": "src/app.py"}),
+                json.dumps({"action": "read_file", "path": "src/app.py"}),
+                json.dumps({"action": "read_file", "path": "src/app.py"}),
+                json.dumps({"action": "finish", "summary": "Done."}),
+            ]
+        )
+        agent = CodingAgent(git_repo_with_files, model, "")
+        result = agent.run("Read the file many times.")
+        assert result.final_state == "done"
+        soft = [m for m in agent.memory if "already read" in m]
+        hard = [m for m in agent.memory if "MUST answer now" in m]
+        assert len(soft) == 1
+        assert len(hard) >= 1
+
+    def test_duplicate_counter_resets_after_new_action(self, git_repo_with_files):
+        model = StubModel(
+            [
+                json.dumps({"action": "read_file", "path": "src/app.py"}),
+                json.dumps({"action": "read_file", "path": "src/app.py"}),
+                json.dumps({"action": "read_file", "path": "src/util.py"}),
+                json.dumps({"action": "read_file", "path": "src/util.py"}),
+                json.dumps({"action": "finish", "summary": "Done."}),
+            ]
+        )
+        agent = CodingAgent(git_repo_with_files, model, "")
+        agent.run("Read files.")
+        hard = [m for m in agent.memory if "MUST answer now" in m]
+        assert hard == []
 
     def test_duplicate_search_rejected(self, git_repo_with_files):
         model = StubModel(
@@ -525,3 +558,134 @@ class TestContextPruning:
         agent.run("Read two files.")
         assert "read_file small.py" in agent.working_context.active_snippets
         assert "read_file big.py" not in agent.working_context.active_snippets
+
+
+BASELINE_GO_REPO_FILES = {
+    "README.md": "# Firewall\n\nVisualizes iptables rules.\n",
+    "go.mod": "module firewall\n\ngo 1.21\n",
+    "main.go": "package main\n\nfunc main() {}\n",
+    "internal/firewall/service.go": (
+        "package firewall\n\n"
+        "type Service struct {\n"
+        "\tName string\n"
+        "}\n\n"
+        "func NewService() *Service {\n"
+        "\treturn &Service{}\n"
+        "}\n\n"
+        "func (s *Service) ApplyPolicy() error {\n"
+        "\treturn nil\n"
+        "}\n"
+    ),
+    "internal/firewall/store.go": (
+        "package firewall\n\n"
+        "type Store interface {\n"
+        "\tSave() error\n"
+        "}\n"
+    ),
+    "internal/firewall/service_test.go": (
+        "package firewall\n\n"
+        "func TestApplyPolicy() error {\n"
+        "\treturn nil\n"
+        "}\n"
+    ),
+}
+
+
+class TestBaselineRegression:
+    """Regression test for the v3.0.1 baseline INSPECT task (spec section 36)."""
+
+    def _setup_repo(self, git_repo):
+        for rel, content in BASELINE_GO_REPO_FILES.items():
+            target = git_repo / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        import subprocess
+
+        subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=git_repo, check=True)
+
+    def test_inspect_baseline_completes(self, git_repo):
+        self._setup_repo(git_repo)
+        model = StubModel(
+            [
+                json.dumps(
+                    {
+                        "action": "finish",
+                        "summary": "The project is a firewall visualizer.",
+                    }
+                ),
+            ]
+        )
+        agent = CodingAgent(git_repo, model, "")
+        result = agent.run("Revisa que hay en la carpeta y dime que hace el proyecto")
+
+        assert result.final_state == "done"
+        assert result.stop_reason == "completed"
+        assert result.llm_calls <= 2
+        assert result.task_type == "inspect"
+
+    def test_inspect_baseline_no_read_loop(self, git_repo):
+        self._setup_repo(git_repo)
+        responses = [
+            json.dumps({"action": "read_file", "path": "README.md"}),
+            json.dumps({"action": "read_file", "path": "README.md"}),
+            json.dumps({"action": "finish", "summary": "Done."}),
+        ]
+        model = StubModel(responses)
+        agent = CodingAgent(git_repo, model, "")
+        result = agent.run("Revisa que hay en la carpeta y dime que hace el proyecto")
+
+        assert result.final_state == "done"
+        assert result.llm_calls <= 4
+        dup_facts = [
+            f
+            for f in agent.working_context.facts
+            if "already read" in f or "already performed" in f
+        ]
+        assert len(dup_facts) >= 1
+
+    def test_inspect_baseline_prompt_under_control(self, git_repo):
+        self._setup_repo(git_repo)
+        model = StubModel(
+            [json.dumps({"action": "finish", "summary": "Done."})]
+        )
+        agent = CodingAgent(git_repo, model, "")
+        result = agent.run("Revisa que hay en la carpeta y dime que hace el proyecto")
+
+        assert result.max_prompt_chars > 0
+        assert result.max_prompt_chars < 7000
+        assert result.repo_map_chars <= 5000
+
+    def test_inspect_baseline_no_irrelevant_candidates(self, git_repo):
+        self._setup_repo(git_repo)
+        model = StubModel(
+            [json.dumps({"action": "finish", "summary": "Done."})]
+        )
+        agent = CodingAgent(git_repo, model, "")
+        agent.run("Revisa que hay en la carpeta y dime que hace el proyecto")
+
+        _, user = model.calls[0]
+        assert "RELEVANT SYMBOL CANDIDATES" not in user
+
+    def test_symbol_task_reads_symbol_not_file(self, git_repo):
+        self._setup_repo(git_repo)
+        model = StubModel(
+            [
+                json.dumps(
+                    {
+                        "action": "read_symbol",
+                        "path": "internal/firewall/service.go",
+                        "symbol": "ApplyPolicy",
+                    }
+                ),
+                json.dumps({"action": "finish", "summary": "Reviewed ApplyPolicy."}),
+            ]
+        )
+        agent = CodingAgent(git_repo, model, "")
+        result = agent.run("Revisa cómo funciona ApplyPolicy")
+
+        assert result.final_state == "done"
+        assert result.symbol_reads == 1
+        assert result.full_file_reads == 0
+        assert result.symbol_context_chars < 1000
+        assert result.symbol_index_symbols >= 3

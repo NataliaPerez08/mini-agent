@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import ast
+import re
+import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .scanner import RepoScan
 
+MAX_SIGNATURE_CHARS = 300
+MAX_SYMBOL_FILE_BYTES = 1_000_000
+MAX_SYMBOLS_TOTAL = 5000
+MAX_SYMBOLS_PER_FILE = 100
 
-@dataclass
+
+@dataclass(frozen=True)
 class Symbol:
     name: str
     kind: str
     path: str
     start_line: int
     end_line: int
-    receiver: str = ""
+    signature: str | None = None
+    receiver: str | None = None
 
     def display(self) -> str:
         if self.kind == "method" and self.receiver:
@@ -23,8 +32,6 @@ class Symbol:
             return f"func {self.name}() L{self.start_line}-L{self.end_line}"
         if self.kind == "async_function":
             return f"async func {self.name}() L{self.start_line}-L{self.end_line}"
-        if self.kind in ("struct", "interface", "class", "const", "var"):
-            return f"{self.kind} {self.name} L{self.start_line}-L{self.end_line}"
         return f"{self.kind} {self.name} L{self.start_line}-L{self.end_line}"
 
     def compact(self) -> str:
@@ -32,9 +39,7 @@ class Symbol:
             return (
                 f"({self.receiver}) {self.name}() L{self.start_line}-L{self.end_line}"
             )
-        if self.kind == "function":
-            return f"{self.name}() L{self.start_line}-L{self.end_line}"
-        if self.kind == "async_function":
+        if self.kind in ("function", "async_function"):
             return f"{self.name}() L{self.start_line}-L{self.end_line}"
         return f"{self.name} {self.kind} L{self.start_line}-L{self.end_line}"
 
@@ -42,6 +47,10 @@ class Symbol:
 @dataclass
 class SymbolIndex:
     symbols: list[Symbol] = field(default_factory=list)
+    files_parsed: int = 0
+    errors: int = 0
+    truncated: bool = False
+    index_elapsed_seconds: float = 0.0
     _by_name: dict[str, list[Symbol]] = field(default_factory=dict, repr=False)
     _by_file: dict[str, list[Symbol]] = field(default_factory=dict, repr=False)
     _finalized: bool = field(default=False, repr=False)
@@ -54,23 +63,32 @@ class SymbolIndex:
             self._by_file.setdefault(sym.path, []).append(sym)
         self._finalized = True
 
-    def find(self, query: str) -> list[Symbol]:
+    def find(self, query: str, limit: int = 20) -> list[Symbol]:
         self._ensure_indexed()
         q = query.lower().strip()
         if not q:
             return []
         exact = self._by_name.get(q, [])
         if exact:
-            return list(exact)
+            return list(exact[:limit])
         results: list[Symbol] = []
         for sym in self.symbols:
             if q in sym.name.lower():
                 results.append(sym)
+                if len(results) >= limit:
+                    break
         return results
 
     def by_file(self, path: str) -> list[Symbol]:
         self._ensure_indexed()
         return list(self._by_file.get(path, []))
+
+    def exact(self, path: str, name: str) -> list[Symbol]:
+        self._ensure_indexed()
+        results = [s for s in self.symbols if s.path == path and s.name == name]
+        if results:
+            return results
+        return [s for s in self.symbols if s.path == path and s.name.lower() == name.lower()]
 
     def find_candidates(self, keywords: list[str]) -> list[Symbol]:
         self._ensure_indexed()
@@ -87,6 +105,87 @@ class SymbolIndex:
                     seen.add(id(sym))
                     results.append(sym)
         return results
+
+
+# ---------------------------------------------------------------------------
+# Task relevance ranking
+# ---------------------------------------------------------------------------
+
+_TASK_STOP_WORDS = frozenset(
+    {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "must", "can", "shall", "in", "on", "at",
+        "to", "for", "of", "with", "by", "from", "and", "or", "but", "not",
+        "no", "nor", "so", "yet", "this", "that", "these", "those", "it",
+        "its", "when", "where", "what", "which", "who", "how", "why", "all",
+        "any", "each", "few", "more", "most", "other", "some", "such", "only",
+        "own", "same", "than", "too", "very", "just", "also", "then", "once",
+        "here", "there", "while", "about", "into", "over", "under",
+        "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del",
+        "en", "y", "o", "que", "se", "su", "sus", "es", "son", "esta",
+        "este", "esto", "estan", "hay", "hace", "hacen", "dime", "di",
+        "diga", "revisa", "revisar", "revise", "mira", "mirar", "ver",
+        "ves", "carpeta", "directorio", "folder", "directory", "proyecto",
+        "project", "archivo", "file", "files", "codigo", "code", "como",
+        "funciona", "function", "method", "class", "test", "por", "para",
+        "con", "sin", "sobre", "entre", "hasta", "desde", "donde",
+        "encuentra", "localiza", "find", "locate", "cual", "cuales",
+        "corrige", "corregir", "fix", "change", "cambia", "cambiar",
+        "modify", "modifica", "implement", "implementa", "add", "anade",
+        "agrega", "elimina", "remove", "delete", "bug", "error", "failing",
+        "debug", "empty", "vacio", "cuando", "tambien", "porque", "muy",
+        "poco", "devuelva", "devuelve", "return", "returns",
+    }
+)
+
+
+def _normalize_accents(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+
+def _tokenize_task(task: str) -> list[str]:
+    normalized = _normalize_accents(task)
+    raw = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", normalized)
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for w in raw:
+        wl = w.lower()
+        if len(wl) < 3 or wl in _TASK_STOP_WORDS or wl in seen:
+            continue
+        seen.add(wl)
+        tokens.append(wl)
+    return tokens
+
+
+def rank_symbols_for_task(
+    task: str,
+    symbols: SymbolIndex,
+    limit: int = 10,
+) -> list[Symbol]:
+    symbols._ensure_indexed()
+    tokens = _tokenize_task(task)
+    if not tokens:
+        return []
+
+    scored: list[tuple[int, int, int, Symbol]] = []
+    for idx, sym in enumerate(symbols.symbols):
+        name_lower = sym.name.lower()
+        path_lower = sym.path.lower()
+        score = 0
+        for tok in tokens:
+            if name_lower == tok:
+                score += 100
+            elif tok in name_lower:
+                score += 10
+            elif tok in path_lower:
+                score += 5
+        if score > 0:
+            scored.append((-score, sym.start_line, idx, sym))
+
+    scored.sort()
+    return [s[3] for s in scored[:limit]]
 
 
 # ---------------------------------------------------------------------------
@@ -142,12 +241,42 @@ def _go_field_identifier_child(node) -> str | None:
     return None
 
 
+def _go_signature(src: bytes, node, kind: str, receiver: str = "") -> str:
+    text = _go_node_text(src, node)
+    brace_idx = text.find("{")
+    if brace_idx != -1:
+        sig = text[:brace_idx].strip()
+    else:
+        sig = text.strip().split("\n")[0]
+
+    if kind == "method" and receiver and not sig.startswith(f"func ({receiver})"):
+        paren_idx = sig.find(")")
+        if paren_idx != -1:
+            after = sig[paren_idx + 1 :].strip()
+            sig = f"func ({receiver}) {after}"
+
+    if kind in ("struct", "interface"):
+        name = _go_node_text(src, node)
+        for child in node.children:
+            if child.type == "type_spec":
+                for c in child.children:
+                    if c.type == "type_identifier":
+                        name = _go_node_text(src, c)
+                        break
+                break
+        sig = f"type {name} {kind}"
+
+    return sig[:MAX_SIGNATURE_CHARS]
+
+
 def extract_go_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symbol]:
     if not _go_available:
         return []
     try:
         src_bytes = path.read_bytes()
     except OSError:
+        return []
+    if len(src_bytes) > MAX_SYMBOL_FILE_BYTES:
         return []
     try:
         tree = _go_parser.parse(src_bytes)
@@ -168,21 +297,27 @@ def extract_go_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symb
 
         if node.type == "function_declaration":
             name = _go_identifier_child(node)
-            if name and _add(
-                Symbol(
-                    name=name,
-                    kind="function",
-                    path=rel,
-                    start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1,
-                )
-            ):
-                break
+            if name:
+                sig = _go_signature(src_bytes, node, "function")
+                if _add(
+                    Symbol(
+                        name=name,
+                        kind="function",
+                        path=rel,
+                        start_line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        signature=sig,
+                    )
+                ):
+                    break
 
         elif node.type == "method_declaration":
             name = _go_field_identifier_child(node)
+            if not name:
+                name = _go_identifier_child(node)
             if name:
                 receiver = _go_receiver_type(src_bytes, node)
+                sig = _go_signature(src_bytes, node, "method", receiver)
                 if _add(
                     Symbol(
                         name=name,
@@ -190,6 +325,7 @@ def extract_go_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symb
                         path=rel,
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
+                        signature=sig,
                         receiver=receiver,
                     )
                 ):
@@ -219,42 +355,21 @@ def extract_go_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symb
                             path=rel,
                             start_line=spec.start_point[0] + 1,
                             end_line=spec.end_point[0] + 1,
+                            signature=f"type {type_name} struct",
                         )
                     ):
                         break
-                elif (
-                    type_name
-                    and is_interface
-                    and _add(
-                        Symbol(
-                            name=type_name,
-                            kind="interface",
-                            path=rel,
-                            start_line=spec.start_point[0] + 1,
-                            end_line=spec.end_point[0] + 1,
-                        )
+                elif type_name and is_interface and _add(
+                    Symbol(
+                        name=type_name,
+                        kind="interface",
+                        path=rel,
+                        start_line=spec.start_point[0] + 1,
+                        end_line=spec.end_point[0] + 1,
+                        signature=f"type {type_name} interface",
                     )
                 ):
                     break
-
-        elif node.type in ("const_declaration", "var_declaration"):
-            kind = "const" if node.type == "const_declaration" else "var"
-            for spec in node.children:
-                if spec.type not in ("const_spec", "var_spec"):
-                    continue
-                if len(symbols) >= max_symbols:
-                    break
-                for child in spec.children:
-                    if child.type == "identifier" and _add(
-                        Symbol(
-                            name=_go_node_text(src_bytes, child),
-                            kind=kind,
-                            path=rel,
-                            start_line=node.start_point[0] + 1,
-                            end_line=node.end_point[0] + 1,
-                        )
-                    ):
-                        break
 
     return symbols
 
@@ -264,10 +379,24 @@ def extract_go_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symb
 # ---------------------------------------------------------------------------
 
 
+def _py_signature(source: str, node: ast.AST) -> str:
+    lines = source.splitlines()
+    start = node.lineno - 1
+    for i in range(start, min(start + 10, len(lines))):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.endswith(":"):
+            return stripped[:MAX_SIGNATURE_CHARS]
+    first_line = lines[start].strip() if start < len(lines) else ""
+    return first_line[:MAX_SIGNATURE_CHARS]
+
+
 def extract_python_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symbol]:
     try:
         source = path.read_text(errors="replace")
     except OSError:
+        return []
+    if len(source.encode("utf-8")) > MAX_SYMBOL_FILE_BYTES:
         return []
     try:
         tree = ast.parse(source, filename=str(path))
@@ -279,6 +408,7 @@ def extract_python_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[
         if len(symbols) >= max_symbols:
             break
         if isinstance(node, ast.AsyncFunctionDef):
+            sig = _py_signature(source, node)
             symbols.append(
                 Symbol(
                     name=node.name,
@@ -286,9 +416,11 @@ def extract_python_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[
                     path=rel,
                     start_line=node.lineno,
                     end_line=node.end_lineno or node.lineno,
+                    signature=sig,
                 )
             )
         elif isinstance(node, ast.FunctionDef):
+            sig = _py_signature(source, node)
             symbols.append(
                 Symbol(
                     name=node.name,
@@ -296,9 +428,11 @@ def extract_python_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[
                     path=rel,
                     start_line=node.lineno,
                     end_line=node.end_lineno or node.lineno,
+                    signature=sig,
                 )
             )
         elif isinstance(node, ast.ClassDef):
+            sig = _py_signature(source, node)
             symbols.append(
                 Symbol(
                     name=node.name,
@@ -306,6 +440,7 @@ def extract_python_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[
                     path=rel,
                     start_line=node.lineno,
                     end_line=node.end_lineno or node.lineno,
+                    signature=sig,
                 )
             )
     return symbols
@@ -326,18 +461,63 @@ def extract_symbols(path: Path, rel: str, max_symbols: int = 30) -> list[Symbol]
 
 
 def build_symbol_index(
-    repo: Path, scan: RepoScan, max_symbols_per_file: int = 30
+    repo: Path, scan: RepoScan, max_symbols_per_file: int = MAX_SYMBOLS_PER_FILE
 ) -> SymbolIndex:
     repo = repo.resolve()
+    start = time.time()
     all_symbols: list[Symbol] = []
+    files_parsed = 0
+    errors = 0
+    truncated = False
+
     for rel in scan.files:
+        if len(all_symbols) >= MAX_SYMBOLS_TOTAL:
+            truncated = True
+            break
         full = repo / rel
         suffix = full.suffix.lower()
         if suffix not in (".go", ".py"):
             continue
         try:
+            file_size = full.stat().st_size
+        except OSError:
+            errors += 1
+            continue
+        if file_size > MAX_SYMBOL_FILE_BYTES:
+            errors += 1
+            continue
+        try:
             syms = extract_symbols(full, rel, max_symbols=max_symbols_per_file)
+            files_parsed += 1
         except Exception:  # noqa: BLE001
             syms = []
-        all_symbols.extend(syms)
-    return SymbolIndex(symbols=all_symbols)
+            errors += 1
+        remaining = MAX_SYMBOLS_TOTAL - len(all_symbols)
+        all_symbols.extend(syms[:remaining])
+
+    elapsed = time.time() - start
+    return SymbolIndex(
+        symbols=all_symbols,
+        files_parsed=files_parsed,
+        errors=errors,
+        truncated=truncated,
+        index_elapsed_seconds=round(elapsed, 4),
+    )
+
+
+def reindex_files(
+    repo: Path, index: SymbolIndex, files: list[str]
+) -> SymbolIndex:
+    repo = repo.resolve()
+    existing = [s for s in index.symbols if s.path not in set(files)]
+    for rel in files:
+        full = repo / rel
+        suffix = full.suffix.lower()
+        if suffix not in (".go", ".py"):
+            continue
+        try:
+            syms = extract_symbols(full, rel)
+        except Exception:  # noqa: BLE001
+            syms = []
+        existing.extend(syms)
+    return SymbolIndex(symbols=existing)

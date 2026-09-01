@@ -102,6 +102,29 @@ Allowed actions:
   {"action":"read_symbol","path":"...","symbol":"..."}
   {"action":"read_file","path":"...","start":1,"end":220}
 Do not emit markdown fences.""",
+    "budget_exhausted_finish": _BASE
+    + """
+
+READ BUDGET EXHAUSTED.
+
+You must answer using the existing repository map and loaded context.
+Do not request read_file or search_code.
+
+Allowed action:
+  {"action":"finish","summary":"..."}
+Do not emit markdown fences.""",
+    "budget_exhausted_plan": _BASE
+    + """
+
+READ BUDGET EXHAUSTED.
+
+You must proceed using the existing repository map and loaded context.
+Do not request read_file or search_code.
+
+Allowed actions:
+  {"action":"plan","files":["..."],"summary":"..."}
+  {"action":"finish","summary":"..."}
+Do not emit markdown fences.""",
 }
 
 _STATE_PROMPT_MAP: dict[str, str] = {
@@ -113,7 +136,11 @@ _STATE_PROMPT_MAP: dict[str, str] = {
 }
 
 
-def get_system_prompt(state: str) -> str:
+def get_system_prompt(state: str, budget_exhausted: bool = False, task_type: str = "") -> str:
+    if budget_exhausted:
+        if task_type in ("modify", "debug"):
+            return SYSTEM_PROMPTS["budget_exhausted_plan"]
+        return SYSTEM_PROMPTS["budget_exhausted_finish"]
     key = _STATE_PROMPT_MAP.get(state, "discover_read")
     return SYSTEM_PROMPTS[key]
 
@@ -172,8 +199,12 @@ def build_state_prompt(
     plan: dict[str, Any] | None = None,
     test_failure: str = "",
     symbol_candidates: str = "",
+    budget_exhausted: bool = False,
+    active_code: list[str] | None = None,
 ) -> str:
-    mem = "\n".join(memory[-8:]) or "<none>"
+    mem = "\n".join(memory[-12:]) or "<none>"
+    code_lines = active_code or []
+    code_str = "\n".join(code_lines[-8:]) or "<none>"
 
     if state in ("discover", "read"):
         sections = [f"TASK\n{task}", f"REPOSITORY MAP\n{repo_map}"]
@@ -181,10 +212,21 @@ def build_state_prompt(
             sections.append(f"RELEVANT SYMBOL CANDIDATES\n{symbol_candidates}")
         if auto_read:
             sections.append(f"AUTO-READ CONTENT\n{auto_read}")
+        if code_str != "<none>":
+            sections.append(f"ACTIVE CODE\n{code_str}")
         sections.append(f"WORKING MEMORY\n{mem}")
         sections.append(f"GIT STATUS\n{status}")
-        sections.append(f"LAST TOOL RESULT\n{tool_result or '<none>'}")
-        sections.append("Select the single best next action. Return JSON only.")
+        if tool_result and tool_result not in code_str:
+            sections.append(f"LAST TOOL RESULT\n{tool_result}")
+        if budget_exhausted:
+            sections.append(
+                "READ BUDGET EXHAUSTED.\n"
+                "You must answer using the existing repository map and loaded context.\n"
+                "Do not request read_file or search_code.\n"
+                "Allowed action: finish"
+            )
+        else:
+            sections.append("Select the single best next action. Return JSON only.")
         return "\n\n".join(sections)
 
     if state == "plan":

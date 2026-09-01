@@ -4,9 +4,9 @@ import os
 import subprocess
 from pathlib import Path
 
-from .symbols import Symbol, SymbolIndex
+from .symbols import SymbolIndex
 
-CONTEXT_LINES = 5
+SYMBOL_CONTEXT_LINES = 4
 
 
 class RepoTools:
@@ -34,30 +34,53 @@ class RepoTools:
         return "\n".join(body) if body else "<empty>"
 
     def read_symbol(
-        self, path: str, symbol_name: str, context_lines: int = CONTEXT_LINES
+        self,
+        path: str,
+        symbol_name: str,
+        context_lines: int = SYMBOL_CONTEXT_LINES,
+        kind: str | None = None,
+        receiver: str | None = None,
     ) -> str:
         file_path = self._safe_path(path)
         if not file_path.is_file():
             return f"ERROR: not a file: {path}"
         candidates = self.symbol_index.by_file(path)
-        match: Symbol | None = None
-        for sym in candidates:
-            if sym.name == symbol_name:
-                match = sym
-                break
-        if match is None:
+        exact_matches = [s for s in candidates if s.name == symbol_name]
+        if not exact_matches:
             lowered = symbol_name.lower()
-            for sym in candidates:
-                if sym.name.lower() == lowered:
-                    match = sym
-                    break
-        if match is None:
+            exact_matches = [s for s in candidates if s.name.lower() == lowered]
+        if not exact_matches:
             return f"ERROR: symbol {symbol_name!r} not found in {path}"
+
+        if kind:
+            exact_matches = [s for s in exact_matches if s.kind == kind]
+        if receiver:
+            exact_matches = [
+                s for s in exact_matches if s.receiver and s.receiver == receiver
+            ]
+
+        if len(exact_matches) > 1:
+            lines_list = []
+            for sym in exact_matches:
+                rcv = f" ({sym.receiver})" if sym.receiver else ""
+                lines_list.append(
+                    f"- {sym.kind}{rcv} {sym.name} L{sym.start_line}-L{sym.end_line}"
+                )
+            return "ambiguous symbol:\n" + "\n".join(lines_list)
+
+        match = exact_matches[0]
         lines = file_path.read_text(errors="replace").splitlines()
         start = max(1, match.start_line - context_lines)
         end = min(len(lines), match.end_line + context_lines)
         body = [f"{i:>5}: {lines[i - 1]}" for i in range(start, end + 1)]
-        header = f"SYMBOL {symbol_name} ({match.kind}) {path} L{match.start_line}-L{match.end_line}\n"
+        display = match.name
+        if match.receiver:
+            display = f"({match.receiver}).{match.name}"
+        header = (
+            f"FILE: {path}\n"
+            f"SYMBOL: {display}\n"
+            f"LINES: {match.start_line}-{match.end_line}\n\n"
+        )
         return header + "\n".join(body) if body else header + "<empty>"
 
     def search_code(self, query: str, path: str = ".") -> str:

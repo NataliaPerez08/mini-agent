@@ -197,20 +197,24 @@ class TestReadSymbol:
     def test_read_symbol_returns_range(self, git_repo):
         tools = self._make_tools(git_repo)
         result = tools.read_symbol("fw/service.go", "ApplyPolicy")
-        assert "SYMBOL ApplyPolicy" in result
+        assert "SYMBOL: ApplyPolicy" in result
         assert "func ApplyPolicy" in result
-        assert "L15-L17" in result
+        assert "LINES: 15-17" in result
 
     def test_read_symbol_adds_context(self, git_repo):
         tools = self._make_tools(git_repo)
         result = tools.read_symbol("fw/service.go", "ApplyPolicy")
         lines = result.splitlines()
         body_lines = [
-            l for l in lines if l.strip() and ":" in l and not l.startswith("SYMBOL")
+            l
+            for l in lines
+            if l.strip()
+            and ":" in l
+            and not l.startswith(("SYMBOL", "FILE", "LINES"))
         ]
         first_line_num = int(body_lines[0].strip().split(":")[0])
         last_line_num = int(body_lines[-1].strip().split(":")[0])
-        assert first_line_num == 10
+        assert first_line_num == 11
         assert last_line_num == 17
 
     def test_read_symbol_not_found(self, git_repo):
@@ -232,15 +236,13 @@ class TestReadSymbol:
     def test_read_symbol_method(self, git_repo):
         tools = self._make_tools(git_repo)
         result = tools.read_symbol("fw/service.go", "Status")
-        assert "SYMBOL Status" in result
-        assert "method" in result
+        assert "SYMBOL: (*Service).Status" in result
         assert "func (s *Service) Status" in result
 
     def test_read_symbol_struct(self, git_repo):
         tools = self._make_tools(git_repo)
         result = tools.read_symbol("fw/service.go", "Service")
-        assert "SYMBOL Service" in result
-        assert "struct" in result
+        assert "SYMBOL: Service" in result
         assert "type Service struct" in result
 
     def test_read_symbol_custom_context_lines(self, git_repo):
@@ -248,7 +250,11 @@ class TestReadSymbol:
         result = tools.read_symbol("fw/service.go", "ApplyPolicy", context_lines=1)
         lines = result.splitlines()
         body_lines = [
-            l for l in lines if l.strip() and ":" in l and not l.startswith("SYMBOL")
+            l
+            for l in lines
+            if l.strip()
+            and ":" in l
+            and not l.startswith(("SYMBOL", "FILE", "LINES"))
         ]
         first_line_num = int(body_lines[0].strip().split(":")[0])
         assert first_line_num == 14
@@ -263,3 +269,59 @@ class TestReadSymbol:
         tools = self._make_tools(git_repo)
         result = tools.read_file("fw/service.go")
         assert "func ApplyPolicy" in result
+
+    def test_read_symbol_ambiguous(self, git_repo):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Run", "method", "fw/a.go", 10, 20, receiver="*Foo"),
+                Symbol("Run", "method", "fw/a.go", 30, 40, receiver="*Bar"),
+            ]
+        )
+        tools = RepoTools(git_repo, "", symbol_index=idx)
+        (git_repo / "fw").mkdir()
+        (git_repo / "fw" / "a.go").write_text(
+            "package fw\n\ntype Foo struct{}\nfunc (f *Foo) Run() {}\n\ntype Bar struct{}\nfunc (b *Bar) Run() {}\n"
+        )
+        result = tools.read_symbol("fw/a.go", "Run")
+        assert "ambiguous" in result.lower()
+        assert "*Foo" in result
+        assert "*Bar" in result
+
+    def test_read_symbol_resolved_by_receiver(self, git_repo):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Run", "method", "fw/a.go", 10, 20, receiver="*Foo"),
+                Symbol("Run", "method", "fw/a.go", 30, 40, receiver="*Bar"),
+            ]
+        )
+        tools = RepoTools(git_repo, "", symbol_index=idx)
+        (git_repo / "fw").mkdir()
+        (git_repo / "fw" / "a.go").write_text(
+            "package fw\n\ntype Foo struct{}\nfunc (f *Foo) Run() {}\n\ntype Bar struct{}\nfunc (b *Bar) Run() {}\n"
+        )
+        result = tools.read_symbol("fw/a.go", "Run", receiver="*Foo")
+        assert "ERROR" not in result
+        assert "(*Foo).Run" in result
+
+    def test_read_symbol_resolved_by_kind(self, git_repo):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Foo", "function", "fw/a.go", 1, 5),
+                Symbol("Foo", "struct", "fw/a.go", 7, 10),
+            ]
+        )
+        tools = RepoTools(git_repo, "", symbol_index=idx)
+        (git_repo / "fw").mkdir()
+        (git_repo / "fw" / "a.go").write_text(
+            "package fw\n\nfunc Foo() {}\n\ntype Foo struct{}\n"
+        )
+        result = tools.read_symbol("fw/a.go", "Foo", kind="struct")
+        assert "ERROR" not in result
+        assert "type Foo struct" in result
+
+    def test_read_symbol_new_format(self, git_repo):
+        tools = self._make_tools(git_repo)
+        result = tools.read_symbol("fw/service.go", "ApplyPolicy")
+        assert "FILE: fw/service.go" in result
+        assert "SYMBOL: ApplyPolicy" in result
+        assert "LINES:" in result

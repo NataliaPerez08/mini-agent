@@ -2,3 +2,19 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
+mini_opencode_mvp.egg-info/
+
+# experiment data (kept locally, not tracked)
+experiments/runs.jsonl
+experiments/traces/
+
+# work artifacts
+.aider.chat.history.md
+next_steps*.txt
+symbol-context-v3-1.txt
+
+# local test repositories (independent git repos)
+iptables-visualizer/
+test-repo/
+symbol-test/
