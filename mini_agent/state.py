@@ -68,6 +68,8 @@ ALLOWED_ACTIONS: dict[AgentState, set[str]] = {
     AgentState.FAILED: set(),
 }
 
+READ_ACTIONS = frozenset({"read_file", "read_symbol", "search_code"})
+
 TASK_BUDGETS: dict[TaskType, tuple[int, int]] = {
     TaskType.INSPECT: (2, 4),
     TaskType.LOCATE: (3, 5),
