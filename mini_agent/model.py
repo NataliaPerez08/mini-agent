@@ -79,3 +79,48 @@ def extract_json_object(text: str) -> dict[str, Any]:
         if start == -1 or end == -1 or end <= start:
             raise ValueError(f"Model did not return JSON: {text[:500]}")
         return json.loads(text[start : end + 1])
+
+
+def validate_action_object(action: object) -> str:
+    """Return an error message when an action object violates the contract.
+
+    The canonical field is "action" and it must be a non-empty string.
+    Missing or invalid actions are structured model-output failures and
+    are never silently converted to an empty string.
+    """
+    if not isinstance(action, dict):
+        return "Model output is not a JSON object."
+    if "action" not in action:
+        if "next_action" in action:
+            return (
+                "Model used the field 'next_action' instead of the canonical "
+                "'action' field. Use exactly: {\"action\": \"<allowed action>\"}"
+            )
+        return (
+            "Model output is missing the required 'action' field. "
+            "Return exactly one JSON object with an 'action' field naming "
+            "a single allowed action."
+        )
+    act = action["action"]
+    if not isinstance(act, str) or not act:
+        return (
+            "Model 'action' field must be a non-empty string. "
+            "Return exactly one JSON object with an 'action' field."
+        )
+    return ""
+
+
+def parse_model_output(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse raw model output into (action_dict, error_message).
+
+    Returns (None, error_message) for malformed JSON and for objects that
+    violate the canonical action contract.
+    """
+    try:
+        action = extract_json_object(text)
+    except ValueError as exc:
+        return None, f"Model output is not valid JSON: {exc}"
+    error = validate_action_object(action)
+    if error:
+        return None, error
+    return action, None

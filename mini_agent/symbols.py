@@ -106,6 +106,10 @@ class SymbolIndex:
                     results.append(sym)
         return results
 
+    def by_name(self, name: str, limit: int = 10) -> list[Symbol]:
+        self._ensure_indexed()
+        return list(self._by_name.get(name.lower(), [])[:limit])
+
 
 # ---------------------------------------------------------------------------
 # Task relevance ranking
@@ -186,6 +190,35 @@ def rank_symbols_for_task(
 
     scored.sort()
     return [s[3] for s in scored[:limit]]
+
+
+def find_exact_task_symbol(
+    task: str, symbols: SymbolIndex, limit: int = 10
+) -> Symbol | None:
+    """Resolve an exact symbol name embedded in the task text.
+
+    Deterministic and accent-insensitive: the longest task word that
+    exactly matches an indexed symbol name wins, so a task like
+    "Corrige ApplyPolicy para que devuelva un error cuando Ports esté
+    vacío" resolves ApplyPolicy rather than an unrelated shorter word.
+    """
+    symbols._ensure_indexed()
+    raw = _normalize_accents(task)
+    words = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", raw)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for w in words:
+        wl = w.lower()
+        if len(wl) < 3 or wl in seen:
+            continue
+        seen.add(wl)
+        ordered.append(wl)
+    # Prefer the most specific (longest) identifier in the task text.
+    for wl in sorted(ordered, key=lambda w: -len(w)):
+        exact = list(symbols._by_name.get(wl, [])[:limit])
+        if exact:
+            return exact[0]
+    return None
 
 
 # ---------------------------------------------------------------------------

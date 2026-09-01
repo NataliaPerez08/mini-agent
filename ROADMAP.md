@@ -205,7 +205,7 @@ Symbol-level context is functioning for inspection tasks.
 
 ### v3.1.1 — MODIFY Path Hardening
 
-Status: next stabilization milestone.
+Status: implemented (HARNESS_VERSION v3.1.1).
 
 Motivation:
 
@@ -283,6 +283,23 @@ tests: >= 1
 ```
 
 Do not proceed to major new architecture until the MODIFY path is reliable.
+
+Implementation notes for v3.1.1:
+
+* `find_exact_task_symbol` resolves the longest task identifier that exactly
+  matches an indexed symbol name (accent-insensitive); localized
+  MODIFY/DEBUG runs auto-load that symbol via `read_symbol` in `_setup`
+  before the first LLM call.
+* `validate_action_object` / `parse_model_output` enforce the canonical
+  `action` field locally: `next_action`, missing or empty actions are
+  structured model-output failures, never silently coerced to an empty
+  string.
+* Invalid outputs produce bounded recovery feedback (with a 3x identical
+  repeat warning) and log `invalid_action` events with reason
+  `model_output_contract`.
+* The ApplyPolicy scenario now measures `symbol_reads >= 1`,
+  `full_file_reads == 0`, `llm_calls <= 4`, `patches == 1`, `tests >= 1`
+  under the integration tests in `tests/test_v311_hardening.py`.
 
 ## Planned Phases
 

@@ -10,6 +10,7 @@ from mini_agent.symbols import (
     build_symbol_index,
     extract_go_symbols,
     extract_python_symbols,
+    find_exact_task_symbol,
     rank_symbols_for_task,
 )
 
@@ -587,6 +588,79 @@ class TestRankSymbolsForTask:
         idx = SymbolIndex(symbols=syms)
         results = rank_symbols_for_task("Revisa Policy", idx, limit=5)
         assert len(results) == 5
+
+
+class TestFindExactTaskSymbol:
+    def test_longest_exact_match_wins(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("ApplyPolicy", "function", "fw/service.go", 31, 74),
+                Symbol("Port", "method", "fw/types.go", 8, 24),
+            ]
+        )
+        result = find_exact_task_symbol(
+            "Corrige ApplyPolicy para que devuelva error cuando Port esté vacío", idx
+        )
+        assert result is not None
+        assert result.name == "ApplyPolicy"
+
+    def test_accent_insensitive(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("ApplyPolicy", "function", "fw/service.go", 31, 74),
+            ]
+        )
+        result = find_exact_task_symbol("Corrige ApplyPolicy", idx)
+        assert result is not None
+        assert result.name == "ApplyPolicy"
+
+    def test_case_insensitive(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("ApplyPolicy", "function", "fw/service.go", 31, 74),
+                Symbol("PolicyStore", "interface", "fw/types.go", 8, 24),
+            ]
+        )
+        result = find_exact_task_symbol("corrige applypolicy", idx)
+        assert result is not None
+        assert result.name == "ApplyPolicy"
+
+    def test_no_exact_symbol_returns_none(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Foo", "function", "a.go", 1, 10),
+            ]
+        )
+        assert find_exact_task_symbol("mejora el rendimiento general", idx) is None
+
+    def test_short_words_ignored(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Id", "method", "a.go", 1, 10),
+            ]
+        )
+        assert find_exact_task_symbol("muestra el id", idx) is None
+
+
+class TestSymbolIndexByName:
+    def test_by_name_exact(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("ApplyPolicy", "function", "fw/service.go", 31, 74),
+                Symbol("ApplyPolicy", "method", "fw/other.go", 8, 24),
+            ]
+        )
+        results = idx.by_name("ApplyPolicy")
+        assert len(results) == 2
+        assert all(s.name == "ApplyPolicy" for s in results)
+
+    def test_by_name_missing_returns_empty(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Foo", "function", "a.go", 1, 10),
+            ]
+        )
+        assert idx.by_name("Nope") == []
 
 
 class TestIndexLimits:
