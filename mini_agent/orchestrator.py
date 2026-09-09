@@ -194,6 +194,7 @@ class RunState:
     full_file_context_chars: int = 0
     auto_read_content: str = ""
     auto_read_files: list[str] = field(default_factory=list)
+    auto_symbols: list[str] = field(default_factory=list)
 
     def duplicate_feedback(self, soft_msg: str) -> str:
         self.consecutive_duplicates += 1
@@ -292,44 +293,6 @@ class Orchestrator:
         agent._vprint(f"[verbose] action_budget: {effective_hard_limit}")
         agent._vprint(f"[verbose] code_budget: {code_budget}")
 
-        state = AgentState.READ
-        rs = RunState()
-        if task_type == TaskType.INSPECT:
-            inspection_files = choose_inspection_files(agent.scan)
-            for f in inspection_files:
-                content = agent.tools.read_file(f)
-                if len(rs.auto_read_content) + len(content) > FAST_PATH_MAX_CHARS:
-                    break
-                rs.auto_read_content += f"\n--- {f} ---\n{content}\n"
-                rs.auto_read_files.append(f)
-                agent.progress.add_auto_read(f)
-                rs.tool_calls += 1
-                agent._vprint(f"[verbose] auto-read: {f} ({len(content)} chars)")
-        elif task_type in (TaskType.MODIFY, TaskType.DEBUG):
-            target = find_exact_task_symbol(self.task, agent.symbol_index)
-            if target is not None:
-                content = agent.tools.read_symbol(target.path, target.name)
-                if not content.startswith("ERROR"):
-                    agent.progress.record_symbol_read(target.path, target.name)
-                    agent.progress.read_actions += 1
-                    rs.symbol_reads += 1
-                    rs.symbol_context_chars += len(content)
-                    compact = content[-4000:]
-                    agent.last_tool_result = compact
-                    agent.working_context.add_snippet(
-                        f"read_symbol {target.path}::{target.name}",
-                        compact,
-                        budget=code_budget,
-                        is_symbol=True,
-                    )
-                    rs.tool_calls += 1
-                    agent._vprint(
-                        f"[verbose] auto-symbol: {target.path}::{target.name} "
-                        f"({len(content)} chars)"
-                    )
-
-        agent._vprint(f"[verbose] initial_state: {state.value.upper()}")
-
         git_commit, repo_dirty = capture_git_metadata(agent.repo)
         agent._log_event(
             "run_start",
@@ -345,6 +308,62 @@ class Orchestrator:
             truncated=agent.symbol_index.truncated,
             duration_seconds=agent.symbol_index.index_elapsed_seconds,
         )
+
+        state = AgentState.READ
+        rs = RunState()
+        if task_type == TaskType.INSPECT:
+            inspection_files = choose_inspection_files(agent.scan)
+            for f in inspection_files:
+                content = agent.tools.read_file(f)
+                if len(rs.auto_read_content) + len(content) > FAST_PATH_MAX_CHARS:
+                    break
+                rs.auto_read_content += f"\n--- {f} ---\n{content}\n"
+                rs.auto_read_files.append(f)
+                agent.progress.add_auto_read(f)
+                rs.tool_calls += 1
+                agent._vprint(f"[verbose] auto-read: {f} ({len(content)} chars)")
+                agent._log_event(
+                    "auto_read",
+                    path=f,
+                    chars=len(content),
+                    reason="inspect_fast_path",
+                )
+        elif task_type in (TaskType.MODIFY, TaskType.DEBUG):
+            target = find_exact_task_symbol(self.task, agent.symbol_index)
+            if target is not None:
+                content = agent.tools.read_symbol(target.path, target.name)
+                if not content.startswith("ERROR"):
+                    agent.progress.record_symbol_read(target.path, target.name)
+                    agent.progress.read_actions += 1
+                    rs.symbol_reads += 1
+                    rs.symbol_context_chars += len(content)
+                    rs.auto_symbols.append(f"{target.path}::{target.name}")
+                    compact = content[-4000:]
+                    agent.last_tool_result = compact
+                    agent.working_context.add_snippet(
+                        f"read_symbol {target.path}::{target.name}",
+                        compact,
+                        budget=code_budget,
+                        is_symbol=True,
+                    )
+                    rs.tool_calls += 1
+                    agent._vprint(
+                        f"[verbose] auto-symbol: {target.path}::{target.name} "
+                        f"({len(content)} chars)"
+                    )
+                    agent._log_event(
+                        "auto_symbol_read",
+                        path=target.path,
+                        symbol=target.name,
+                        kind=target.kind,
+                        start_line=target.start_line,
+                        end_line=target.end_line,
+                        chars=len(content),
+                        reason="exact_task_symbol_match",
+                    )
+
+        agent._vprint(f"[verbose] initial_state: {state.value.upper()}")
+
         agent._transition(AgentState.DISCOVER, state)
 
         handler = ActionHandler(
@@ -760,6 +779,8 @@ class Orchestrator:
                 full_file_reads=rs.full_file_reads,
                 symbol_context_chars=rs.symbol_context_chars,
                 full_file_context_chars=rs.full_file_context_chars,
+                auto_read_files=rs.auto_read_files,
+                auto_symbols=rs.auto_symbols,
             )
             print_metrics(result, agent._vprint)
             return result

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .experiments import ExperimentRun, RunMetrics, now_iso
 from .scanner import RepoScan
@@ -44,6 +44,8 @@ class AgentResult:
     full_file_reads: int = 0
     symbol_context_chars: int = 0
     full_file_context_chars: int = 0
+    auto_read_files: list[str] = field(default_factory=list)
+    auto_symbols: list[str] = field(default_factory=list)
 
 
 def print_preflight(
@@ -125,6 +127,8 @@ def print_metrics(result: AgentResult, vprint: VPrint) -> None:
     vprint(f"full_file_reads: {result.full_file_reads}")
     vprint(f"symbol_context_chars: {result.symbol_context_chars}")
     vprint(f"full_file_context_chars: {result.full_file_context_chars}")
+    vprint(f"auto_read_files: {result.auto_read_files}")
+    vprint(f"auto_symbols: {result.auto_symbols}")
 
 
 def build_run_metrics(result: AgentResult) -> RunMetrics:
@@ -153,6 +157,8 @@ def build_run_metrics(result: AgentResult) -> RunMetrics:
         full_file_reads=result.full_file_reads,
         symbol_context_chars=result.symbol_context_chars,
         full_file_context_chars=result.full_file_context_chars,
+        auto_read_files=result.auto_read_files,
+        auto_symbols=result.auto_symbols,
     )
 
 

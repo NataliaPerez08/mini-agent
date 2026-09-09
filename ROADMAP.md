@@ -301,6 +301,27 @@ Implementation notes for v3.1.1:
   `full_file_reads == 0`, `llm_calls <= 4`, `patches == 1`, `tests >= 1`
   under the integration tests in `tests/test_v311_hardening.py`.
 
+### v3.1.2 — Observability of Deterministic Pre-Loads
+
+Status: implemented (HARNESS_VERSION v3.1.2).
+
+Motivation:
+
+The INSPECT fast path and the v3.1.1 auto-symbol load ran deterministically
+but emitted no trace events and carried no run-summary detail, so an experiment
+trace could not reconstruct what the harness loaded or why.
+
+Capabilities:
+
+* `auto_read` trace events for INSPECT auto-reads and `auto_symbol_read` trace
+  events for the MODIFY/DEBUG exact-symbol load, each with a `reason` field;
+* `run_start`/`symbol_index` events reordered before pre-loads so traces start
+  coherently;
+* `auto_read_files` and `auto_symbols` (list of `"path::Name"`) carried through
+  `AgentResult` into `runs.jsonl`.
+
+Regression tests live in `tests/test_observability.py`.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in

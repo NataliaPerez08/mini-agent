@@ -6,7 +6,7 @@ This file is a working catalog. Items are removed when resolved and marked as
 covered by a regression test. See `ROADMAP.md` for future architecture and
 `AGENTS.md` for the design principles the issues are judged against.
 
-Last updated against: HARNESS_VERSION `v3.1.1` (commits through `22f0849`).
+Last updated against: HARNESS_VERSION `v3.1.2` (commits through `22f0849`).
 
 ---
 
@@ -104,27 +104,23 @@ Trivial memory, but the 3x check only needs the last three entries.
 
 ## 5. Observability
 
-### 5.1 Deterministic pre-loads have no dedicated trace events
+Resolved in v3.1.2 (regression tests in `tests/test_observability.py`):
 
-Neither the INSPECT auto-reads nor the v3.1.1 auto-symbol read emit an
-`_log_event`; only vprint output and the final aggregate metrics
-(`symbol_reads`, `files_read`) record them. A trace cannot reconstruct what was
-loaded deterministically or why.
-
-### 5.2 Run summary lacks pre-load detail
-
-`AgentResult`/`runs.jsonl` carry aggregates but not `auto_read_files` nor the
-auto-loaded symbol name/path.
+- Deterministic pre-loads now emit dedicated trace events (`auto_read` for the
+  INSPECT fast path, `auto_symbol_read` for the MODIFY/DEBUG exact-symbol
+  load), each with a `reason` field. The `run_start` and `symbol_index` events
+  are emitted before pre-loads so a trace reconstructs ordering.
+- `AgentResult`/`runs.jsonl` now carry `auto_read_files` and `auto_symbols`
+  (list of `"path::Name"`), so run summaries record what was loaded
+  deterministically.
 
 ## 6. Versioning and experimentation
 
 ### 6.1 Fase 4 verification change was not attributed to a version bump
 
-`run_targeted_tests` (commit `22f0849`) changes verification behavior for
-non-pytest configured commands and for empty `test_command`. It was committed
-under `v3.1.1` without a bump. Per `AGENTS.md`, behavior that affects
-experiments should move `HARNESS_VERSION`. Decide: accept as a bugfix within
-v3.1.1, or tag v3.1.2.
+Resolved: the v3.1.2 bump (introduced for the Observability work above) also
+covers the `run_targeted_tests` behavior change for non-pytest configured
+commands and empty `test_command`.
 
 ### 6.2 v3.1.1 exit criteria not yet validated on a real model
 
@@ -159,8 +155,7 @@ not from git history.
 | Verification       | —          | 2.1, 2.2 | — |
 | Invalid output     | 3.2        | 3.1       | — |
 | Context selection  | 4.4        | 4.1, 4.2, 4.3 | — |
-| Observability      | —          | 5.1, 5.2 | — |
-| Versioning/exp     | 6.1, 6.3   | 6.2       | — |
+| Versioning/exp     | 6.3        | 6.2       | — |
 
 High-severity items: none currently open. The two most impactful open items are
 **1.2** (unverified patch can reach DONE) and **4.1/4.2** (single-symbol,

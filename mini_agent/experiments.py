@@ -4,7 +4,7 @@ import json
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,6 +45,9 @@ class RunMetrics:
     full_file_reads: int = 0
     symbol_context_chars: int = 0
     full_file_context_chars: int = 0
+
+    auto_read_files: list[str] = field(default_factory=list)
+    auto_symbols: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -201,6 +204,8 @@ class ExperimentLogger:
                 "full_file_reads": run.metrics.full_file_reads,
                 "symbol_context_chars": run.metrics.symbol_context_chars,
                 "full_file_context_chars": run.metrics.full_file_context_chars,
+                "auto_read_files": run.metrics.auto_read_files,
+                "auto_symbols": run.metrics.auto_symbols,
             }
             line = json.dumps(record, ensure_ascii=False)
             with open(self.runs_path, "a", encoding="utf-8") as fh:

@@ -185,7 +185,7 @@ class TestV311Metrics:
 
         runs = _read_jsonl(out / "runs.jsonl")
         rec = runs[0]
-        assert rec["harness_version"] == "v3.1.1"
+        assert rec["harness_version"] == "v3.1.2"
         assert rec["symbol_reads"] == result.symbol_reads
         assert rec["full_file_reads"] == result.full_file_reads
         assert rec["final_state"] == "done"
