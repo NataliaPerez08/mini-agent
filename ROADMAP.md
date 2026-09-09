@@ -301,6 +301,23 @@ Implementation notes for v3.1.1:
   `full_file_reads == 0`, `llm_calls <= 4`, `patches == 1`, `tests >= 1`
   under the integration tests in `tests/test_v311_hardening.py`.
 
+## Current Known Issues
+
+Open problems, limitations, and open questions are tracked in
+`CURRENT_ISSUES.md`, not inline in this roadmap.
+
+Two items shape the priority of the planned phases below:
+
+* **Unverified patches can reach DONE** (CURRENT_ISSUES 1.2): with an empty
+  `test_command`, the harness has no way to prove a modification works.
+  Resolving this is a precondition for trusting MODIFY success rates.
+* **Targeted verification is pytest-shaped** (CURRENT_ISSUES 2.1, 2.2): the
+  v6 Targeted Verification phase must generalize beyond `test_*.py` naming and
+  pytest-based commands.
+
+The v4 (LSP) and v5 (impact graph) phases directly address symbol
+disambiguation (CURRENT_ISSUES 4.2).
+
 ## Planned Phases
 
 ### v4 — LSP Integration
@@ -395,6 +412,10 @@ Use the graph for context selection rather than dumping it into the prompt.
 Goal:
 
 Reduce verification cost while preserving confidence.
+
+Current baseline (CURRENT_ISSUES 2.1, 2.2): `_find_related_tests` only matches
+`test_*.py` / `*_test.py`, and `run_targeted_tests` only narrows pytest-style
+commands. Go repos and non-pytest frameworks run the full configured command.
 
 Instead of always starting with:
 
