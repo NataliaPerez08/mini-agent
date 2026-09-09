@@ -35,6 +35,21 @@ def git_repo_with_files(git_repo: Path) -> Path:
     return repo
 
 
+@pytest.fixture
+def git_repo_with_symbol(git_repo: Path) -> Path:
+    repo = git_repo
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text(
+        "def ApplyPolicy(ports):\n    return 'ok'\n"
+    )
+    (repo / "src" / "utils.py").write_text(
+        "PI = 3.14\n\ndef add(a, b):\n    return a + b\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    return repo
+
+
 class StubModel:
     def __init__(self, responses: Sequence[str], model: str = "qwen2.5-coder:7b"):
         self._responses = list(responses)

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
-
-import pytest
 
 from mini_agent.agent import CodingAgent
 from tests.conftest import StubModel
@@ -19,21 +16,6 @@ PATCH_APP = (
     "+        return 'error: ports required'\n"
     "+    return 'ok'\n"
 )
-
-
-@pytest.fixture
-def git_repo_with_symbol(git_repo: Path) -> Path:
-    repo = git_repo
-    (repo / "src").mkdir()
-    (repo / "src" / "app.py").write_text(
-        "def ApplyPolicy(ports):\n    return 'ok'\n"
-    )
-    (repo / "src" / "utils.py").write_text(
-        "PI = 3.14\n\ndef add(a, b):\n    return a + b\n"
-    )
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    return repo
 
 
 class TestExactSymbolAutoLoad:
