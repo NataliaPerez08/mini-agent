@@ -1,7 +1,12 @@
+import shutil
+
 import pytest
 
+from mini_agent.orchestrator import Orchestrator
 from mini_agent.symbols import Symbol, SymbolIndex
 from mini_agent.tools import RepoTools
+
+from tests.conftest import StubModel
 
 
 class TestSafePath:
@@ -193,6 +198,61 @@ class TestRunTargetedTests:
         result = tools.run_targeted_tests(["test_thing.py"])
         assert "EXIT_CODE=0" in result
         assert "1 passed" in result
+
+
+GO_MODULE = "module x\n\ngo 1.22\n"
+
+
+class TestGoTargetedTests:
+    def test_find_related_tests_go_same_dir(self, git_repo):
+        engine = git_repo / "internal" / "engine"
+        engine.mkdir(parents=True)
+        (engine / "validator.go").write_text("package engine\n")
+        (engine / "validator_test.go").write_text("package engine\n")
+        (git_repo / "internal" / "other_test.go").write_text("package internal\n")
+        from mini_agent.agent import CodingAgent
+
+        agent = CodingAgent(git_repo, StubModel([]), "true")
+        related = Orchestrator(agent, "task")._find_related_tests(
+            ["internal/engine/validator.go"]
+        )
+        assert related == ["internal/engine/validator_test.go"]
+
+    def test_go_test_command_module_subdir(self, git_repo):
+        (git_repo / "backend").mkdir()
+        (git_repo / "backend" / "go.mod").write_text(GO_MODULE)
+        tools = RepoTools(git_repo, "cd backend && go test ./...")
+        cmd = tools._go_test_command(
+            ["backend/internal/engine/validator_test.go"]
+        )
+        assert cmd == "cd backend && go test ./internal/engine/"
+
+    def test_go_test_command_root_module(self, git_repo):
+        (git_repo / "go.mod").write_text(GO_MODULE)
+        tools = RepoTools(git_repo, "go test ./...")
+        cmd = tools._go_test_command(["internal/engine/validator_test.go"])
+        assert cmd == "go test ./internal/engine/"
+
+    def test_go_test_command_multi_module_falls_back(self, git_repo):
+        for name in ("a", "b"):
+            (git_repo / name).mkdir()
+            (git_repo / name / "go.mod").write_text(f"module {name}\n\ngo 1.22\n")
+        tools = RepoTools(git_repo, "go test ./...")
+        assert tools._go_test_command(["a/a_test.go", "b/b_test.go"]) == ""
+
+    @pytest.mark.skipif(shutil.which("go") is None, reason="go not installed")
+    def test_run_targeted_tests_go_real(self, git_repo):
+        (git_repo / "go.mod").write_text(GO_MODULE)
+        (git_repo / "x.go").write_text(
+            "package x\n\nfunc Add(a, b int) int { return a + b }\n"
+        )
+        (git_repo / "x_test.go").write_text(
+            "package x\n\nimport \"testing\"\n\n"
+            "func TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fail()\n\t}\n}\n"
+        )
+        tools = RepoTools(git_repo, "go test ./...")
+        result = tools.run_targeted_tests(["x_test.go"])
+        assert "EXIT_CODE=0" in result
 
 
 GO_FILE = """package firewall

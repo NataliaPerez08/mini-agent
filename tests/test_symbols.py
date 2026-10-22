@@ -10,7 +10,7 @@ from mini_agent.symbols import (
     build_symbol_index,
     extract_go_symbols,
     extract_python_symbols,
-    find_exact_task_symbol,
+    find_exact_task_symbols,
     rank_symbols_for_task,
 )
 
@@ -590,7 +590,7 @@ class TestRankSymbolsForTask:
         assert len(results) == 5
 
 
-class TestFindExactTaskSymbol:
+class TestFindExactTaskSymbols:
     def test_longest_exact_match_wins(self):
         idx = SymbolIndex(
             symbols=[
@@ -598,11 +598,10 @@ class TestFindExactTaskSymbol:
                 Symbol("Port", "method", "fw/types.go", 8, 24),
             ]
         )
-        result = find_exact_task_symbol(
+        result = find_exact_task_symbols(
             "Corrige ApplyPolicy para que devuelva error cuando Port esté vacío", idx
         )
-        assert result is not None
-        assert result.name == "ApplyPolicy"
+        assert [s.name for s in result] == ["ApplyPolicy", "Port"]
 
     def test_accent_insensitive(self):
         idx = SymbolIndex(
@@ -610,9 +609,8 @@ class TestFindExactTaskSymbol:
                 Symbol("ApplyPolicy", "function", "fw/service.go", 31, 74),
             ]
         )
-        result = find_exact_task_symbol("Corrige ApplyPolicy", idx)
-        assert result is not None
-        assert result.name == "ApplyPolicy"
+        result = find_exact_task_symbols("Corrige ApplyPolicy", idx)
+        assert [s.name for s in result] == ["ApplyPolicy"]
 
     def test_case_insensitive(self):
         idx = SymbolIndex(
@@ -621,17 +619,16 @@ class TestFindExactTaskSymbol:
                 Symbol("PolicyStore", "interface", "fw/types.go", 8, 24),
             ]
         )
-        result = find_exact_task_symbol("corrige applypolicy", idx)
-        assert result is not None
-        assert result.name == "ApplyPolicy"
+        result = find_exact_task_symbols("corrige applypolicy", idx)
+        assert [s.name for s in result] == ["ApplyPolicy"]
 
-    def test_no_exact_symbol_returns_none(self):
+    def test_no_exact_symbol_returns_empty(self):
         idx = SymbolIndex(
             symbols=[
                 Symbol("Foo", "function", "a.go", 1, 10),
             ]
         )
-        assert find_exact_task_symbol("mejora el rendimiento general", idx) is None
+        assert find_exact_task_symbols("mejora el rendimiento general", idx) == []
 
     def test_short_words_ignored(self):
         idx = SymbolIndex(
@@ -639,7 +636,60 @@ class TestFindExactTaskSymbol:
                 Symbol("Id", "method", "a.go", 1, 10),
             ]
         )
-        assert find_exact_task_symbol("muestra el id", idx) is None
+        assert find_exact_task_symbols("muestra el id", idx) == []
+
+    def test_multiple_task_symbols_all_resolve(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("ApplyPolicy", "function", "fw/service.go", 31, 74),
+                Symbol("validatePorts", "function", "fw/ports.go", 1, 20),
+                Symbol("PolicyStore", "interface", "fw/types.go", 8, 24),
+            ]
+        )
+        result = find_exact_task_symbols(
+            "Corrige ApplyPolicy para que use validatePorts", idx
+        )
+        assert [s.name for s in result] == ["validatePorts", "ApplyPolicy"]
+
+    def test_same_name_prefers_file_named_in_task(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol(
+                    "Validate",
+                    "method",
+                    "backend/internal/api/handlers/policy_handler.go",
+                    150,
+                    166,
+                ),
+                Symbol(
+                    "Validate",
+                    "method",
+                    "backend/internal/engine/validator.go",
+                    46,
+                    87,
+                ),
+            ]
+        )
+        result = find_exact_task_symbols(
+            "Corrige Validate en internal/engine/validator.go", idx
+        )
+        assert [s.path for s in result] == [
+            "backend/internal/engine/validator.go"
+        ]
+
+    def test_capped_at_max_symbols(self):
+        idx = SymbolIndex(
+            symbols=[
+                Symbol("Alpha", "function", "a.go", 1, 10),
+                Symbol("Beta", "function", "b.go", 1, 10),
+                Symbol("Gamma", "function", "c.go", 1, 10),
+                Symbol("Delta", "function", "d.go", 1, 10),
+            ]
+        )
+        result = find_exact_task_symbols(
+            "cambia Alpha y Beta y Gamma y Delta", idx
+        )
+        assert len(result) == 3
 
 
 class TestSymbolIndexByName:

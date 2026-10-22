@@ -439,6 +439,57 @@ Regression tests live in `tests/test_v314_hardening.py`
 `TestEmptyPatchFieldGuard`, `TestFinishAfterFailedVerification`,
 `TestEditPromptCarriesActiveCode`, `TestBudgetExhaustedPromptAlignment`).
 
+### v3.1.6 — Go Targeted Verification and Multi-Symbol Auto-Load
+
+Status: implemented (HARNESS_VERSION v3.1.6).
+
+Motivation:
+
+The live MODIFY benchmark runs showed two deterministic wastes:
+
+* verification always ran the full configured command (`go test ./...`,
+  ~40s) even when the patched file had an adjacent `_test.go` — the
+  harness only knew pytest naming (CURRENT_ISSUES 2.1/2.2);
+* the exact-symbol auto-load resolved a single symbol, so a task naming
+  several symbols (the live task names both `Validate` and the test
+  function) left the model to spend its read budget discovering what the
+  harness already knew (CURRENT_ISSUES 4.1).
+
+Behavior:
+
+* `_find_related_tests` matches Go's same-directory convention
+  (`validator.go` -> `validator_test.go`); `run_targeted_tests` builds a
+  package-targeted `go test ./<pkg>/` for go-flavored commands, walking
+  up to the nearest `go.mod` (with `cd` prefix for non-root modules) and
+  falling back to the full command across multiple modules;
+* `find_exact_task_symbols` resolves every task word that exactly
+  matches an indexed symbol (longest first, deduplicated, capped at 3);
+  same-name ambiguity prefers the candidate whose file is named in the
+  task text, so "Corrige Validate en internal/engine/validator.go"
+  resolves the engine's `Validate`, not the handler's;
+* deterministic pre-loads no longer consume the model's read-action
+  budget: budgets bound model decisions, not harness decisions;
+* `experiments/baseline_modify.py` records the live MODIFY baseline
+  into `experiments/runs.jsonl` (CURRENT_ISSUES 6.2).
+
+Post-v3.1.6 baseline (3 runs per model, temperature 0, same repo, task,
+and test command):
+
+| Model                 | Solve | Stop reason               | LLM calls | Patches | Elapsed (median) |
+|-----------------------|-------|---------------------------|-----------|---------|------------------|
+| qwen2.5-coder:7b      | 0/3   | llm_call_budget_exhausted | 8         | 0       | ~51s             |
+| qwen2.5-coder:14b     | 3/3   | completed                 | 7         | 1       | ~294s            |
+
+The 7B failure is semantic, not mechanical: the auto-load provides the
+correct symbols, but the model re-requests them, exhausts its read
+budget, and never patches. Failed runs are experimental data; this
+table is the comparison baseline for v4+.
+
+Regression tests: `tests/test_tools.py` (Go targeting),
+`tests/test_symbols.py` (multi-symbol + path disambiguation),
+`tests/test_observability.py` (multi-symbol trace),
+`tests/test_v316_hardening.py` (pre-load budget).
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in

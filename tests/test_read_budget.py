@@ -131,9 +131,10 @@ class TestReadBudgetExhaustionModify:
 
     def test_budget_exhausted_read_fails_immediately(self, git_repo_with_files: Path):
         """For MODIFY, invalid read after budget exhaustion fails immediately."""
+        (git_repo_with_files / "src" / "extra.py").write_text("x = 1\n")
         model = StubModel(
             [
-                _resp("read_file", path="src/app.py", start=1, end=10),
+                _resp("read_file", path="src/extra.py", start=1, end=10),
                 _resp("read_file", path="src/utils.py", start=1, end=10),
                 _resp("read_file", path="README.md", start=1, end=10),
                 _resp("read_file", path="src/app.py", start=1, end=10),

@@ -6,6 +6,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
+from pathlib import Path
 
 from .scanner import RepoScan
 
@@ -203,15 +204,16 @@ def rank_symbols_for_task(
     return [s[3] for s in scored[:limit]]
 
 
-def find_exact_task_symbol(
-    task: str, symbols: SymbolIndex, limit: int = 10
-) -> Symbol | None:
-    """Resolve an exact symbol name embedded in the task text.
+def find_exact_task_symbols(
+    task: str, symbols: SymbolIndex, limit: int = 10, max_symbols: int = 3
+) -> list[Symbol]:
+    """Resolve the exact symbol names embedded in the task text.
 
-    Deterministic and accent-insensitive: the longest task word that
-    exactly matches an indexed symbol name wins, so a task like
-    "Corrige ApplyPolicy para que devuelva un error cuando Ports esté
-    vacío" resolves ApplyPolicy rather than an unrelated shorter word.
+    Deterministic and accent-insensitive: task words that exactly match
+    indexed symbol names resolve to symbols, longest word first, so a
+    task like "Corrige ApplyPolicy para que use validatePorts" resolves
+    both ApplyPolicy and validatePorts. One symbol per word; ambiguous
+    same-name symbols still resolve to index order (CURRENT_ISSUES 4.2).
     """
     symbols._ensure_indexed()
     raw = _normalize_accents(task)
@@ -224,12 +226,29 @@ def find_exact_task_symbol(
             continue
         seen.add(wl)
         ordered.append(wl)
-    # Prefer the most specific (longest) identifier in the task text.
+    found: list[Symbol] = []
+    loaded: set[tuple[str, str]] = set()
+    task_lower = raw.lower()
+    # Prefer the most specific (longest) identifiers in the task text.
     for wl in sorted(ordered, key=lambda w: -len(w)):
-        exact = list(symbols._by_name.get(wl, [])[:limit])
-        if exact:
-            return exact[0]
-    return None
+        candidates = list(symbols._by_name.get(wl, [])[:limit])
+        if candidates:
+            # Same-name ambiguity: prefer a candidate whose file is
+            # named in the task text (e.g. "Corrige Validate en
+            # internal/engine/validator.go" resolves the engine's
+            # Validate, not the handler's).
+            sym = next(
+                (c for c in candidates if c.path.lower() in task_lower
+                 or Path(c.path).name.lower() in task_lower),
+                candidates[0],
+            )
+            key = (sym.path, sym.name)
+            if key not in loaded:
+                loaded.add(key)
+                found.append(sym)
+        if len(found) >= max_symbols:
+            break
+    return found[:max_symbols]
 
 
 # ---------------------------------------------------------------------------

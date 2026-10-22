@@ -47,7 +47,7 @@ class TestExactSymbolAutoLoad:
         assert result.tests_run == 1
         assert any("ApplyPolicy" in line for line in agent.working_context.to_active_code_lines())
 
-    def test_auto_symbol_read_consumes_read_budget(
+    def test_auto_symbol_read_does_not_consume_read_budget(
         self, git_repo_with_symbol: Path
     ) -> None:
         model = StubModel(
@@ -66,7 +66,7 @@ class TestExactSymbolAutoLoad:
         agent.run("Corrige ApplyPolicy para que devuelva un error cuando ports esté vacío")
         assert len(agent.progress.symbols_read) == 1
         assert next(iter(agent.progress.symbols_read)) == "src/app.py::ApplyPolicy"
-        assert agent.progress.read_actions == 1
+        assert agent.progress.read_actions == 0
 
     def test_modify_task_without_exact_symbol_does_not_auto_load(
         self, git_repo_with_symbol: Path

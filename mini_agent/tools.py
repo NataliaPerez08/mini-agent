@@ -153,6 +153,34 @@ class RepoTools:
         )
         return "PATCH APPLIED\n" + diff.stdout[-12000:]
 
+    def _go_test_command(self, test_files: list[str]) -> str:
+        """Build a package-targeted `go test` for the given test files.
+
+        Test files are repo-relative; the package path must be relative
+        to the module root (the nearest ancestor holding go.mod), and a
+        non-root module needs a `cd` prefix. Returns "" when the files
+        span multiple modules (fall back to the full command).
+        """
+        mod_dirs: set[Path] = set()
+        packages: set[str] = set()
+        for tf in test_files:
+            pkg_dir = Path(tf).parent
+            mod_dir = pkg_dir
+            while str(mod_dir) != "." and not (
+                self.repo / mod_dir / "go.mod"
+            ).is_file():
+                mod_dir = mod_dir.parent
+            if str(mod_dir) == "." and not (self.repo / "go.mod").is_file():
+                return ""
+            mod_dirs.add(mod_dir)
+            rel = pkg_dir.relative_to(mod_dir).as_posix()
+            packages.add("./" if rel == "." else f"./{rel}/")
+        if len(mod_dirs) > 1:
+            return ""
+        mod_dir = next(iter(mod_dirs))
+        cd = "" if str(mod_dir) == "." else f"cd {mod_dir} && "
+        return f"{cd}go test {' '.join(sorted(packages))}"
+
     def run_tests(self) -> str:
         if not self.test_command.strip():
             return "NO TEST COMMAND CONFIGURED"
@@ -178,6 +206,8 @@ class RepoTools:
         if "pytest" in base:
             prefix = "python -m pytest" if "-m pytest" in base else "pytest"
             cmd = f"{prefix} -q {' '.join(test_files)}"
+        elif "go test" in base:
+            cmd = self._go_test_command(test_files) or base
         else:
             cmd = base
         proc = subprocess.run(

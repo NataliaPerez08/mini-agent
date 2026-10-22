@@ -6,7 +6,7 @@ This file is a working catalog. Items are removed when resolved and marked as
 covered by a regression test. See `ROADMAP.md` for future architecture and
 `AGENTS.md` for the design principles the issues are judged against.
 
-Last updated against: HARNESS_VERSION `v3.1.5`.
+Last updated against: HARNESS_VERSION `v3.1.6`.
 
 ---
 
@@ -40,18 +40,16 @@ v3.1.3: with an empty `test_command` the run now ends `FAILED` with
 
 ## 2. Verification coverage
 
-### 2.1 Targeted tests only match pytest file naming
+Resolved in v3.1.6 for Go (regression tests in `tests/test_tools.py`):
 
-`_find_related_tests` (`orchestrator.py:222`) matches `test_<stem>.py` and
-`<stem>_test.py`. Go repos (`service.go` + `service_test.go`), and any project
-with non-pytest names, always fall back to the full configured test command, so
-the v6 "targeted verification" benefit does not apply.
-
-### 2.2 Non-pytest frameworks lose the targeted benefit
-
-`run_targeted_tests` (`tools.py:131`) only narrows to specific files when the
-configured command is pytest-flavored. For other frameworks the full
-`test_command` runs as-is (targeted file list ignored). Correct but not cheap.
+- `_find_related_tests` matches Go's same-directory `foo.go` ->
+  `foo_test.go` convention, and `run_targeted_tests` builds
+  package-targeted `go test ./<pkg>/` for go-flavored commands (walking
+  to the nearest `go.mod`, falling back to the full command across
+  multiple modules).
+- Remaining gap: frameworks other than pytest and Go (e.g. Jest, cargo
+  test) still fall back to the full configured command. Correct but not
+  cheap; revisit with real tasks in those languages.
 
 ## 3. Invalid-output handling
 
@@ -72,16 +70,19 @@ no per-run limit specific to malformed output, so the signal is diluted.
 
 ### 4.1 Exact-symbol auto-load resolves only one symbol
 
-`find_exact_task_symbol` (`symbols.py:195`) returns the single longest exact
-match. Tasks that name several relevant symbols (e.g. `ApplyPolicy` *and*
-`validatePorts`) pre-load just one; the rest must be requested by the model.
-Same-name symbols across files resolve to index order, not task relevance.
+Resolved in v3.1.6: `find_exact_task_symbols` resolves every task word
+that exactly matches an indexed symbol (longest first, capped at 3), and
+deterministic pre-loads no longer consume the model's read-action
+budget. Regression tests in `tests/test_symbols.py`,
+`tests/test_observability.py`, and `tests/test_v316_hardening.py`.
 
 ### 4.2 Ambiguous same-name symbols not disambiguated
 
-`SymbolIndex.by_name` / the auto-loader pick the first entry for a name. No
-caller/import/package signal is used to disambiguate (that is the v4/v5 LSP and
-impact-graph territory in `ROADMAP.md`).
+Partially addressed in v3.1.6: same-name candidates prefer the one whose
+file is named in the task text, so "Corrige Validate en
+internal/engine/validator.go" resolves the engine's `Validate`. Without
+a path mention, the first index entry still wins; caller/import signals
+remain v4/v5 LSP and impact-graph territory (`ROADMAP.md`).
 
 ### 4.3 Repository map is still repository-wide
 
@@ -117,12 +118,10 @@ commands and empty `test_command`.
 
 ### 6.2 v3.1.1 exit criteria not yet validated on a real model
 
-The ApplyPolicy scenario passes under `StubModel` integration tests
-(`tests/test_v311_hardening.py`) but there is no recorded benchmark run of a
-real 3B–14B model before/after v3.1.1 on the same repo, task, model, and test
-command (`experiments/benchmark.py` exists; `experiments/runs.jsonl` is
-gitignored). Benchmark discipline requires a comparable baseline before claiming
-the optimization.
+Resolved in v3.1.6: `experiments/baseline_modify.py` records the live
+MODIFY baseline (3 runs per model, temperature 0) into
+`experiments/runs.jsonl`; the post-v3.1.6 table lives in `ROADMAP.md`
+and is the comparison baseline for future harness changes.
 
 ### 6.3 `runs.jsonl` and traces are intentionally untracked
 
@@ -145,11 +144,11 @@ not from git history.
 | Area | Low | Medium | High |
 |------|-----|--------|------|
 | Correctness        | 1.2        | 1.1 | — |
-| Verification       | —          | 2.1, 2.2 | — |
+| Verification       | —          | 2 (non-pytest/Go frameworks) | — |
 | Invalid output     | 3.2        | 3.1       | — |
-| Context selection  | 4.4        | 4.1, 4.2, 4.3 | — |
-| Versioning/exp     | 6.3        | 6.2       | — |
+| Context selection  | 4.4        | 4.2, 4.3 | — |
+| Versioning/exp     | 6.3        | —       | — |
 
 High-severity items: none currently open. The most impactful open items are
-**4.1/4.2** (single-symbol, ambiguous auto-load) and **2.1/2.2** (targeted
-verification only benefits pytest-shaped repos).
+**4.2/4.3** (residual symbol disambiguation and repo-map narrowing) and
+**2** (targeted verification beyond pytest and Go).

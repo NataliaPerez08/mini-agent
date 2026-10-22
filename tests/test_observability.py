@@ -94,6 +94,31 @@ class TestModifyAutoSymbolTrace:
         assert event["chars"] > 0
         assert event["reason"] == "exact_task_symbol_match"
 
+    def test_multiple_auto_symbols_in_trace(
+        self, git_repo_with_symbol: Path
+    ) -> None:
+        model = StubModel(
+            [
+                json.dumps(
+                    {
+                        "action": "plan",
+                        "files": ["src/app.py"],
+                        "summary": "Use add in the calculation",
+                    }
+                ),
+                json.dumps({"action": "apply_patch", "patch": PATCH_APP}),
+            ]
+        )
+        task = "Corrige ApplyPolicy para que use add en el calculo"
+        logger, _ = _run_with_logger(git_repo_with_symbol, model, task)
+
+        trace = _read_jsonl(logger.trace_path)
+        auto = [e for e in trace if e["type"] == "auto_symbol_read"]
+        assert [(e["path"], e["symbol"]) for e in auto] == [
+            ("src/app.py", "ApplyPolicy"),
+            ("src/utils.py", "add"),
+        ]
+
     def test_auto_symbol_read_ordering(self, git_repo_with_symbol: Path) -> None:
         model = StubModel(
             [

@@ -42,7 +42,7 @@ from .state import (
     classify_task,
     validate_transition,
 )
-from .symbols import find_exact_task_symbol, rank_symbols_for_task
+from .symbols import find_exact_task_symbols, rank_symbols_for_task
 from .version import HARNESS_VERSION
 
 if TYPE_CHECKING:
@@ -226,12 +226,16 @@ class Orchestrator:
         related: list[str] = []
         for pf in patched_files:
             name = Path(pf).stem
+            pf_dir = Path(pf).parent
             for tf in self.agent.scan.test_files:
-                tf_name = Path(tf).name
-                if (
-                    tf_name in (f"test_{name}.py", f"{name}_test.py")
-                    and tf not in related
-                ):
+                tf_path = Path(tf)
+                tf_name = tf_path.name
+                is_pytest = tf_name in (f"test_{name}.py", f"{name}_test.py")
+                is_go = (
+                    tf_name == f"{name}_test.go"
+                    and tf_path.parent == pf_dir
+                )
+                if (is_pytest or is_go) and tf not in related:
                     related.append(tf)
         return related
 
@@ -337,38 +341,39 @@ class Orchestrator:
                     reason="inspect_fast_path",
                 )
         elif task_type in (TaskType.MODIFY, TaskType.DEBUG):
-            target = find_exact_task_symbol(self.task, agent.symbol_index)
-            if target is not None:
+            for target in find_exact_task_symbols(
+                self.task, agent.symbol_index
+            ):
                 content = agent.tools.read_symbol(target.path, target.name)
-                if not content.startswith("ERROR"):
-                    agent.progress.record_symbol_read(target.path, target.name)
-                    agent.progress.read_actions += 1
-                    rs.symbol_reads += 1
-                    rs.symbol_context_chars += len(content)
-                    rs.auto_symbols.append(f"{target.path}::{target.name}")
-                    compact = content[-4000:]
-                    agent.last_tool_result = compact
-                    agent.working_context.add_snippet(
-                        f"read_symbol {target.path}::{target.name}",
-                        compact,
-                        budget=code_budget,
-                        is_symbol=True,
-                    )
-                    rs.tool_calls += 1
-                    agent._vprint(
-                        f"[verbose] auto-symbol: {target.path}::{target.name} "
-                        f"({len(content)} chars)"
-                    )
-                    agent._log_event(
-                        "auto_symbol_read",
-                        path=target.path,
-                        symbol=target.name,
-                        kind=target.kind,
-                        start_line=target.start_line,
-                        end_line=target.end_line,
-                        chars=len(content),
-                        reason="exact_task_symbol_match",
-                    )
+                if content.startswith("ERROR"):
+                    continue
+                agent.progress.record_symbol_read(target.path, target.name)
+                rs.symbol_reads += 1
+                rs.symbol_context_chars += len(content)
+                rs.auto_symbols.append(f"{target.path}::{target.name}")
+                compact = content[-4000:]
+                agent.last_tool_result = compact
+                agent.working_context.add_snippet(
+                    f"read_symbol {target.path}::{target.name}",
+                    compact,
+                    budget=code_budget,
+                    is_symbol=True,
+                )
+                rs.tool_calls += 1
+                agent._vprint(
+                    f"[verbose] auto-symbol: {target.path}::{target.name} "
+                    f"({len(content)} chars)"
+                )
+                agent._log_event(
+                    "auto_symbol_read",
+                    path=target.path,
+                    symbol=target.name,
+                    kind=target.kind,
+                    start_line=target.start_line,
+                    end_line=target.end_line,
+                    chars=len(content),
+                    reason="exact_task_symbol_match",
+                )
 
         agent._vprint(f"[verbose] initial_state: {state.value.upper()}")
 
