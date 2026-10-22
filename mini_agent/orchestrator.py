@@ -186,6 +186,8 @@ class RunState:
     last_system_prompt_chars: int = 0
     last_user_prompt_chars: int = 0
     stop_reason: str = ""
+    patchless_finish_rejected: bool = False
+    verification_failed: bool = False
     budget_exhausted_logged: bool = False
     budget_recovery_used: bool = False
     symbol_reads: int = 0
@@ -233,19 +235,25 @@ class Orchestrator:
                     related.append(tf)
         return related
 
-    def _run_verification(self, patched_files: list[str]) -> tuple[bool, str]:
+    def _run_verification(self, patched_files: list[str]) -> tuple[bool, str, bool]:
+        """Run deterministic verification.
+
+        Returns (passed, output, verified). verified is False only when no
+        test command is configured: nothing executed, so a patch cannot be
+        reported as successful.
+        """
+        if not self.agent.tools.test_command.strip():
+            self.agent._vprint("[verbose] no tests configured, patch is unverified")
+            return False, "NO TESTS CONFIGURED", False
         related = self._find_related_tests(patched_files)
         if related:
             self.agent._vprint(f"[verbose] targeted tests: {', '.join(related)}")
             output = self.agent.tools.run_targeted_tests(related)
-        elif self.agent.tools.test_command.strip():
+        else:
             self.agent._vprint(f"[verbose] test command: {self.agent.tools.test_command}")
             output = self.agent.tools.run_tests()
-        else:
-            self.agent._vprint("[verbose] no tests configured, skipping verification")
-            return True, "NO TESTS CONFIGURED"
         passed = "EXIT_CODE=0" in output
-        return passed, output
+        return passed, output, True
 
     def _setup(self, task_type: TaskType) -> tuple[RunState, ActionHandler, dict[str, Any]]:
         """Preflight, budget computation, fast path, and run bookkeeping."""
@@ -426,7 +434,16 @@ class Orchestrator:
                     agent._vprint("\n[verbose] --- verify ---")
                     agent._vprint(f"[verbose] state: {state.value.upper()}")
                     test_start = time.time()
-                    passed, test_output = self._run_verification(rs.patched_files)
+                    passed, test_output, verified = self._run_verification(
+                        rs.patched_files
+                    )
+                    if not verified:
+                        rs.stop_reason = "unverified_patch"
+                        agent._log_event("test", success=False, status="unverified")
+                        prev = state
+                        state = AgentState.FAILED
+                        agent._transition(prev, state)
+                        continue
                     test_elapsed = time.time() - test_start
                     agent.progress.record_test()
                     rs.tool_calls += 1
@@ -454,11 +471,13 @@ class Orchestrator:
                     )
 
                     if passed:
+                        rs.verification_failed = False
                         rs.stop_reason = "completed"
                         prev = state
                         state = AgentState.DONE
                         agent._transition(prev, state)
                     else:
+                        rs.verification_failed = True
                         rs.test_failure = test_output[-4000:]
                         if rs.repair_cycles >= MAX_REPAIR_CYCLES:
                             rs.stop_reason = "test_failure"
@@ -548,6 +567,7 @@ class Orchestrator:
                     symbol_candidates=symbol_candidates_str,
                     budget_exhausted=budget_exhausted,
                     active_code=agent.working_context.to_active_code_lines(),
+                    task_type=task_type.value,
                 )
 
                 if rs.llm_calls >= soft_limit and not budget_exhausted:
@@ -741,6 +761,11 @@ class Orchestrator:
                     summary = "Done."
             else:
                 summary = f"Stopped after {rs.llm_calls} LLM calls without completing."
+                if rs.stop_reason == "unverified_patch":
+                    summary = (
+                        f"Changed {', '.join(rs.patched_files)} but no test command "
+                        "is configured; the patch is unverified."
+                    )
 
             agent._vprint(
                 f"\n[verbose] {state.value.upper()} after {rs.llm_calls} LLM call{'s' if rs.llm_calls != 1 else ''}"

@@ -40,6 +40,12 @@ Start Ollama and pull a coding model, for example:
 ollama pull qwen2.5-coder:7b
 ```
 
+Or use the helper (starts a persistent server and pulls the model if missing):
+
+```bash
+scripts/start_ollama.sh
+```
+
 Then run:
 
 ```bash
@@ -50,6 +56,21 @@ mini-agent \
   --model qwen2.5-coder:7b \
   --test-command "pytest -q"
 ```
+
+### Live integration tests
+
+`tests/test_live_ollama.py` runs a real MODIFY task against a copy of
+`iptables-visualizer` with real verification (`go test ./...`). It is
+skipped by default. Opt in with:
+
+```bash
+RUN_OLLAMA_TESTS=1 pytest -q tests/test_live_ollama.py
+```
+
+The fixture starts `ollama serve` when no server is reachable on
+localhost, pulls `OLLAMA_TEST_MODEL` (default `qwen2.5-coder:14b`) when
+missing, and stops only the server it started. Override the endpoint with
+`OLLAMA_BASE_URL`; remote endpoints must already be running.
 
 ## llama.cpp
 

@@ -4,9 +4,41 @@ import os
 import subprocess
 from pathlib import Path
 
-from .symbols import SymbolIndex
+from .symbols import SymbolIndex, strip_receiver_prefix
 
 SYMBOL_CONTEXT_LINES = 4
+
+
+def normalize_patch(patch: str) -> str:
+    """Repair common small-model unified-diff defects before git apply.
+
+    Context lines must start with a space marker; models often emit the
+    raw code line (e.g. a tab) or an empty line instead. Well-formed
+    patches pass through unchanged.
+    """
+    lines = patch.split("\n")
+    trailing_newline = lines and lines[-1] == ""
+    if trailing_newline:
+        lines.pop()
+    out: list[str] = []
+    in_hunk = False
+    for line in lines:
+        if line.startswith("@@"):
+            in_hunk = True
+            out.append(line)
+        elif line.startswith("diff --git"):
+            in_hunk = False
+            out.append(line)
+        elif in_hunk:
+            if not line:
+                out.append(" ")
+            elif line[0] not in " +-\\":
+                out.append(" " + line)
+            else:
+                out.append(line)
+        else:
+            out.append(line)
+    return "\n".join(out) + ("\n" if trailing_newline else "")
 
 
 class RepoTools:
@@ -44,6 +76,7 @@ class RepoTools:
         file_path = self._safe_path(path)
         if not file_path.is_file():
             return f"ERROR: not a file: {path}"
+        symbol_name = strip_receiver_prefix(symbol_name)
         candidates = self.symbol_index.by_file(path)
         exact_matches = [s for s in candidates if s.name == symbol_name]
         if not exact_matches:
@@ -94,9 +127,17 @@ class RepoTools:
 
     def apply_patch(self, patch: str) -> str:
         proc = subprocess.run(
-            ["git", "apply", "--whitespace=nowarn", "-"],
+            [
+                "git",
+                "apply",
+                "--whitespace=nowarn",
+                "--ignore-whitespace",
+                "-C1",
+                "--recount",
+                "-",
+            ],
             cwd=self.repo,
-            input=patch,
+            input=normalize_patch(patch),
             text=True,
             capture_output=True,
             check=False,

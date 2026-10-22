@@ -167,11 +167,11 @@ Capabilities:
 
 This becomes the measurement foundation for subsequent versions.
 
-## Current Phase
+## Completed Through v3.1.3
 
 ### v3.1 — Symbol-Aware Context
 
-Status: implemented and under validation.
+Status: implemented and validated.
 
 Goal:
 
@@ -202,6 +202,8 @@ symbol_context_chars: 579
 ```
 
 Symbol-level context is functioning for inspection tasks.
+
+Validation: `pytest -q` passes with 392 tests passed and 1 skipped.
 
 ### v3.1.1 — MODIFY Path Hardening
 
@@ -322,19 +324,136 @@ Capabilities:
 
 Regression tests live in `tests/test_observability.py`.
 
+### v3.1.3 — Unverified Patches Cannot Reach DONE
+
+Status: implemented (HARNESS_VERSION v3.1.3).
+
+Motivation:
+
+CURRENT_ISSUES 1.2: with an empty `test_command`, `_run_verification` returned
+success without executing anything, so a MODIFY task could reach `DONE` with a
+patch that was never verified, and `tests_run` counted a test that never ran.
+
+Behavior:
+
+* `_run_verification` now reports whether verification actually ran;
+* an unverified patch transitions VERIFY -> FAILED with
+  `stop_reason="unverified_patch"` — no repair cycle and no extra LLM call,
+  because there is no failure output to repair from;
+* `tests_run` stays 0 and the trace records a `test` event with
+  `status="unverified"`;
+* runs with a configured test command are unchanged.
+
+Regression tests live in `tests/test_unverified_patch.py`.
+
+### v3.1.4 — Live-Run Hardening: Patch-less Finishes and Receiver-Qualified Symbols
+
+Status: implemented (HARNESS_VERSION v3.1.4).
+
+Motivation:
+
+The first live end-to-end run (`tests/test_live_ollama.py`, qwen2.5-coder:7b
+against iptables-visualizer) exposed two harness gaps:
+
+* the model escaped a MODIFY task with a false `finish` ("task completed")
+  and zero patches, which the harness reported as `completed`;
+* the repo map renders Go methods as `(*Receiver).Name()`, the model copied
+  that format into `read_symbol`, and the harness failed to resolve it —
+  burning read budget on a failed read.
+
+Behavior:
+
+* `finish` on a MODIFY/DEBUG task with zero applied patches is rejected once
+  with imperative feedback; a repeated finish is accepted as an honest
+  no-change-needed outcome with `stop_reason="completed_without_patch"`, so
+  patch-less completions no longer inflate solve rates;
+* `read_symbol` resolves receiver-qualified names (`(*Service).Status` ->
+  `Status`), and the plain and qualified forms count as the same symbol for
+  duplicate detection;
+* trace events `patchless_finish` (accepted true/false) record both paths.
+
+Regression tests live in `tests/test_v314_hardening.py`.
+
+### v3.1.5 — Live-Run Hardening: Small-Model Patch Tolerance
+
+Status: implemented (HARNESS_VERSION v3.1.5).
+
+Motivation:
+
+Iterating the live end-to-end test (`tests/test_live_ollama.py`,
+qwen2.5-coder:7b/14b against iptables-visualizer) showed that a 7B–14B
+model repeatedly produces *mechanically defective but semantically
+reasonable* patches, and the harness rejected them instead of repairing
+them deterministically. Each defect consumed the whole LLM-call budget:
+
+* patch JSON with literal newlines inside the string value (invalid
+  strict JSON) — repeated identically until budget death;
+* unified diffs missing the leading space marker on context lines
+  (`git apply`: "corrupt patch");
+* context lines re-typed with degraded indentation, including
+  whitespace dropped entirely (`}` vs `\t}`), which
+  `git apply --ignore-whitespace` alone still rejects;
+* repair patches with no `--- a/` / `+++ b/` file headers at all;
+* `apply_patch` actions with a missing `patch` field, which reached
+  `git apply` as an empty patch, counted as a failed patch, and bounced
+  REPAIR -> READ where patching is illegal.
+
+Behavior:
+
+* `extract_json_object` parses with `json.loads(..., strict=False)`,
+  accepting control characters inside JSON strings;
+* `normalize_patch` (tools.py) repairs missing context-line markers and
+  empty in-hunk lines before `git apply`; well-formed patches pass
+  through unchanged;
+* `git apply` now runs with `--ignore-whitespace -C1 --recount`,
+  tolerating whitespace-degraded context and miscounted hunks;
+* `apply_patch` with an empty/missing `patch` field is rejected as a
+  model-output contract violation (`invalid_action`,
+  `reason="missing_patch_field"`) and the run stays in the current
+  state instead of transitioning on a failed patch;
+* a headerless patch starting at `@@` gets `--- a/<path>` / `+++ b/<path>`
+  headers synthesized from the action's `files`/`path` field;
+* when a patch fails to apply but its added lines are already present
+  in the working tree, the failure feedback says so explicitly and
+  demands a different patch (the observed loop was the model resending
+  an already-applied patch after failed verification);
+* `finish` on a MODIFY/DEBUG task whose verification failed is recorded
+  as an honest failure (final state FAILED,
+  `stop_reason="test_failure"`) instead of `completed` — closing a
+  solve-rate-inflation side door reachable via REPAIR -> READ -> finish;
+* `OpenAICompatModel` honors its `temperature` attribute (previously
+  hardcoded to 0.1 in the request payload); the live test pins 0.0;
+* EDIT and REPAIR prompts include ACTIVE CODE and a canonical patch
+  format example with `---`/`+++` headers; the REPAIR prompt explicitly
+  tells the model the previous approach failed and demands a different
+  patch; the budget-exhausted prompt no longer contradicts the system
+  prompt for MODIFY/DEBUG tasks.
+
+Result: the live MODIFY test (real `go test ./...` verification) passes
+with qwen2.5-coder:14b; qwen2.5-coder:7b now fails only on semantics
+(it cannot infer that the second validation issue must not be emitted),
+not on patch mechanics.
+
+Regression tests live in `tests/test_v314_hardening.py`
+(`TestControlCharTolerantParsing`, `TestPatchNormalization`,
+`TestEmptyPatchFieldGuard`, `TestFinishAfterFailedVerification`,
+`TestEditPromptCarriesActiveCode`, `TestBudgetExhaustedPromptAlignment`).
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
 `CURRENT_ISSUES.md`, not inline in this roadmap.
 
-Two items shape the priority of the planned phases below:
+One item shapes the priority of the planned phases below:
 
-* **Unverified patches can reach DONE** (CURRENT_ISSUES 1.2): with an empty
-  `test_command`, the harness has no way to prove a modification works.
-  Resolving this is a precondition for trusting MODIFY success rates.
 * **Targeted verification is pytest-shaped** (CURRENT_ISSUES 2.1, 2.2): the
   v6 Targeted Verification phase must generalize beyond `test_*.py` naming and
   pytest-based commands.
+
+Unverified patches reaching DONE (former CURRENT_ISSUES 1.2) was resolved in
+v3.1.3: a patch that cannot be verified now ends FAILED with
+`stop_reason="unverified_patch"`, so MODIFY success rates are trustworthy
+without a test command.
 
 The v4 (LSP) and v5 (impact graph) phases directly address symbol
 disambiguation (CURRENT_ISSUES 4.2).

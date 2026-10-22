@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from mini_agent.agent import CodingAgent
+from mini_agent.version import HARNESS_VERSION
 from tests.conftest import StubModel
 
 PATCH_APP = (
@@ -74,6 +75,7 @@ class TestExactSymbolAutoLoad:
             [
                 json.dumps({"action": "run_tests"}),
                 json.dumps({"action": "finish", "summary": "Nothing targeted"}),
+                json.dumps({"action": "finish", "summary": "No change needed"}),
             ]
         )
         agent = CodingAgent(git_repo_with_symbol, model, "")
@@ -167,7 +169,7 @@ class TestV311Metrics:
 
         runs = _read_jsonl(out / "runs.jsonl")
         rec = runs[0]
-        assert rec["harness_version"] == "v3.1.2"
+        assert rec["harness_version"] == HARNESS_VERSION
         assert rec["symbol_reads"] == result.symbol_reads
         assert rec["full_file_reads"] == result.full_file_reads
         assert rec["final_state"] == "done"

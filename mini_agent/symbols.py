@@ -14,6 +14,17 @@ MAX_SYMBOL_FILE_BYTES = 1_000_000
 MAX_SYMBOLS_TOTAL = 5000
 MAX_SYMBOLS_PER_FILE = 100
 
+_RECEIVER_PREFIX_RE = re.compile(r"^\(\*?[A-Za-z_][A-Za-z0-9_]*\)\.")
+
+
+def strip_receiver_prefix(name: str) -> str:
+    """Resolve repo-map display names like '(*Service).Status' to 'Status'.
+
+    The repository map renders Go methods as '(*Receiver).Name()', and
+    small models copy that format into read_symbol actions.
+    """
+    return _RECEIVER_PREFIX_RE.sub("", name)
+
 
 @dataclass(frozen=True)
 class Symbol:

@@ -11,10 +11,13 @@ experiments/traces/
 
 # work artifacts
 .aider.chat.history.md
-next_steps*.txt
-symbol-context-v3-1.txt
+/next_steps*.txt
+/symbol-context-v3-1.txt
 
 # local test repositories (independent git repos)
 iptables-visualizer/
 test-repo/
 symbol-test/
+
+# docs
+docs/

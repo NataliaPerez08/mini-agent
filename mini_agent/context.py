@@ -56,14 +56,18 @@ Return only one patch action.
 Do not explain.
 Do not read unrelated files.
 
-Return:
-{"action":"apply_patch","patch":"<valid unified diff>"}
+The patch must include the --- and +++ file headers, exactly as `git apply` requires:
+{"action":"apply_patch","patch":"--- a/path/to/file.ext\\n+++ b/path/to/file.ext\\n@@ -10,7 +10,7 @@\\n unchanged context line\\n-removed line\\n+added line"}
 Do not emit markdown fences.""",
     "repair": SYSTEM_PROMPT
     + """
 
-Tests failed.
-Use the failure output and current diff to make the smallest corrective change.
+Tests failed after your previous patch.
+The previous approach did NOT work: do not repeat it.
+Read the TEST FAILURE, compare it with the code, and produce a DIFFERENT patch that makes the test pass.
+
+The patch must include the --- and +++ file headers, exactly as `git apply` requires:
+{"action":"apply_patch","patch":"--- a/path/to/file.ext\\n+++ b/path/to/file.ext\\n@@ -10,7 +10,7 @@\\n unchanged context line\\n-removed line\\n+added line"}
 
 Allowed actions:
   {"action":"apply_patch","patch":"<valid unified diff>"}
@@ -169,6 +173,7 @@ def build_state_prompt(
     symbol_candidates: str = "",
     budget_exhausted: bool = False,
     active_code: list[str] | None = None,
+    task_type: str = "",
 ) -> str:
     mem = "\n".join(memory[-12:]) or "<none>"
     code_lines = active_code or []
@@ -187,12 +192,22 @@ def build_state_prompt(
         if tool_result and tool_result not in code_str:
             sections.append(f"LAST TOOL RESULT\n{tool_result}")
         if budget_exhausted:
-            sections.append(
-                "READ BUDGET EXHAUSTED.\n"
-                "You must answer using the existing repository map and loaded context.\n"
-                "Do not request read_file or search_code.\n"
-                "Allowed action: finish"
-            )
+            if task_type in ("modify", "debug"):
+                sections.append(
+                    "READ BUDGET EXHAUSTED.\n"
+                    "You must proceed using the existing repository map and "
+                    "loaded context.\n"
+                    "Do not request read_file or search_code.\n"
+                    "Allowed actions: plan, finish"
+                )
+            else:
+                sections.append(
+                    "READ BUDGET EXHAUSTED.\n"
+                    "You must answer using the existing repository map and "
+                    "loaded context.\n"
+                    "Do not request read_file or search_code.\n"
+                    "Allowed action: finish"
+                )
         else:
             sections.append("Select the single best next action. Return JSON only.")
         return "\n\n".join(sections)
@@ -219,9 +234,14 @@ def build_state_prompt(
         sections = [
             f"TASK\n{task}",
             f"PLAN\n{plan_str}",
-            f"FILE CONTEXT\n{tool_result or '<none>'}",
-            "Return only one apply_patch action. Return JSON only.",
         ]
+        if code_str != "<none>":
+            sections.append(f"ACTIVE CODE\n{code_str}")
+        if tool_result and tool_result not in code_str:
+            sections.append(f"FILE CONTEXT\n{tool_result}")
+        sections.append(
+            "Return only one apply_patch action. Return JSON only."
+        )
         return "\n\n".join(sections)
 
     if state == "repair":
@@ -233,10 +253,14 @@ def build_state_prompt(
         sections = [
             f"TASK\n{task}",
             f"PLAN\n{plan_str}",
-            f"TEST FAILURE\n{test_failure or '<none>'}",
-            f"LAST TOOL RESULT\n{tool_result or '<none>'}",
-            "Make the smallest corrective change. Return JSON only.",
         ]
+        if code_str != "<none>":
+            sections.append(f"ACTIVE CODE\n{code_str}")
+        sections.append(f"TEST FAILURE\n{test_failure or '<none>'}")
+        sections.append(f"LAST TOOL RESULT\n{tool_result or '<none>'}")
+        sections.append(
+            "Make the smallest corrective change. Return JSON only."
+        )
         return "\n\n".join(sections)
 
     return build_turn_prompt(task, repo_map, memory, tool_result, status)

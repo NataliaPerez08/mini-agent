@@ -119,7 +119,10 @@ class TestModifyAutoSymbolTrace:
         self, git_repo_with_symbol: Path
     ) -> None:
         model = StubModel(
-            [json.dumps({"action": "finish", "summary": "Nothing targeted"})]
+            [
+                json.dumps({"action": "finish", "summary": "Nothing targeted"}),
+                json.dumps({"action": "finish", "summary": "No change needed"}),
+            ]
         )
         logger, _ = _run_with_logger(
             git_repo_with_symbol, model, "implementa una mejora general"
@@ -166,7 +169,10 @@ class TestRunSummaryPreLoadDetail:
         self, git_repo_with_symbol: Path
     ) -> None:
         model = StubModel(
-            [json.dumps({"action": "finish", "summary": "Nothing targeted"})]
+            [
+                json.dumps({"action": "finish", "summary": "Nothing targeted"}),
+                json.dumps({"action": "finish", "summary": "No change needed"}),
+            ]
         )
         _, out = _run_with_logger(
             git_repo_with_symbol, model, "implementa una mejora general"

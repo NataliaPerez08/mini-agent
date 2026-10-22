@@ -31,7 +31,7 @@ class OpenAICompatModel:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": 0.1,
+            "temperature": self.temperature,
             "stream": False,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -72,13 +72,13 @@ def extract_json_object(text: str) -> dict[str, Any]:
         text = "\n".join(lines).strip()
 
     try:
-        return json.loads(text)
+        return json.loads(text, strict=False)
     except json.JSONDecodeError:
         start = text.find("{")
         end = text.rfind("}")
         if start == -1 or end == -1 or end <= start:
             raise ValueError(f"Model did not return JSON: {text[:500]}")
-        return json.loads(text[start : end + 1])
+        return json.loads(text[start : end + 1], strict=False)
 
 
 def validate_action_object(action: object) -> str:

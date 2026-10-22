@@ -6,7 +6,7 @@ This file is a working catalog. Items are removed when resolved and marked as
 covered by a regression test. See `ROADMAP.md` for future architecture and
 `AGENTS.md` for the design principles the issues are judged against.
 
-Last updated against: HARNESS_VERSION `v3.1.2` (commits through `22f0849`).
+Last updated against: HARNESS_VERSION `v3.1.5`.
 
 ---
 
@@ -25,25 +25,18 @@ into valid JSON would be accepted silently.
 - Residual risk contained by `validate_action_object` (`model.py:84`) and the
   bounded invalid-output recovery in the orchestrator.
 
-### 1.2 Successful patch can be reported without any test evidence
-
-When `test_command` is empty, `_run_verification` (`orchestrator.py:235`) returns
-`True, "NO TESTS CONFIGURED"` without executing anything. A MODIFY task can
-therefore reach `DONE` with a patch that was never verified. This matches the
-documented rule ("never claim success without test evidence when tests exist"),
-but the harness has no way to require evidence.
-
-- Severity: medium.
-- Open question: should unverified modifications be allowed to finish, or
-  should they degrade to `DONE_WITH_UNVERIFIED_PATCH` / a warning in metrics?
-
-### 1.3 Patch verification depends on fragile output sniffing
+### 1.2 Patch verification depends on fragile output sniffing
 
 Success is detected by substring `"EXIT_CODE=0"` in the captured test output
-(`_run_verification`, `orchestrator.py:246`). A test command that prints
+(`_run_verification`, `orchestrator.py`). A test command that prints
 `EXIT_CODE=1` as part of its own output would be misread.
 
 - Severity: low.
+
+Former 1.2 (successful patch reported without test evidence) was resolved in
+v3.1.3: with an empty `test_command` the run now ends `FAILED` with
+`stop_reason="unverified_patch"` and `tests_run == 0`. Regression tests in
+`tests/test_unverified_patch.py`.
 
 ## 2. Verification coverage
 
@@ -151,12 +144,12 @@ not from git history.
 
 | Area | Low | Medium | High |
 |------|-----|--------|------|
-| Correctness        | 1.3        | 1.1, 1.2 | — |
+| Correctness        | 1.2        | 1.1 | — |
 | Verification       | —          | 2.1, 2.2 | — |
 | Invalid output     | 3.2        | 3.1       | — |
 | Context selection  | 4.4        | 4.1, 4.2, 4.3 | — |
 | Versioning/exp     | 6.3        | 6.2       | — |
 
-High-severity items: none currently open. The two most impactful open items are
-**1.2** (unverified patch can reach DONE) and **4.1/4.2** (single-symbol,
-unambiguous auto-load).
+High-severity items: none currently open. The most impactful open items are
+**4.1/4.2** (single-symbol, ambiguous auto-load) and **2.1/2.2** (targeted
+verification only benefits pytest-shaped repos).

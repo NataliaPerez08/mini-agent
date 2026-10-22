@@ -121,11 +121,13 @@ class TestCodingAgentRun:
                 ),
                 json.dumps({"action": "apply_patch", "patch": "invalid diff"}),
                 json.dumps({"action": "finish", "summary": "Gave up."}),
+                json.dumps({"action": "finish", "summary": "Gave up, no patch."}),
             ]
         )
         agent = CodingAgent(git_repo_with_files, model, "true")
         result = agent.run("Fix the return value in src/app.py.")
-        assert result.iterations == 3
+        assert result.iterations == 4
+        assert result.stop_reason == "completed_without_patch"
         assert any("PATCH FAILED" in m for m in agent.memory)
         assert not any("EXIT_CODE" in m for m in agent.memory)
 
@@ -455,10 +457,15 @@ class TestReadSymbolAction:
 
         subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "go"], cwd=git_repo, check=True)
-        model = StubModel([json.dumps({"action": "finish", "summary": "Done."})])
+        model = StubModel(
+            [
+                json.dumps({"action": "finish", "summary": "Done."}),
+                json.dumps({"action": "finish", "summary": "No change needed."}),
+            ]
+        )
         agent = CodingAgent(git_repo, model, "")
         agent.run("Corrige ApplyPolicy del firewall.")
-        assert len(model.calls) == 1
+        assert len(model.calls) == 2
         _, user = model.calls[0]
         assert "RELEVANT SYMBOL CANDIDATES" in user
         assert "ApplyPolicy" in user

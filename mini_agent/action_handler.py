@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .repo_map import MAX_REPO_MAP_CHARS, MAX_REPO_MAP_CHARS_INSPECT, build_repo_map
 from .state import AgentState, TaskType
-from .symbols import reindex_files
+from .symbols import reindex_files, strip_receiver_prefix
 
 if TYPE_CHECKING:
     from .agent import CodingAgent
@@ -99,6 +100,43 @@ class ActionHandler:
         return self.rs.duplicate_feedback(soft_msg)
 
     def _finish(self, action: dict[str, Any], state: AgentState) -> ActionOutcome:
+        if (
+            self.task_type in (TaskType.MODIFY, TaskType.DEBUG)
+            and self.rs.verification_failed
+        ):
+            self.rs.finish_summary = str(action.get("summary", "Done."))
+            self._vprint(f"[verbose] FINISH after failed verification: {self.rs.finish_summary}")
+            self._log_event("finish", state=state.value, iterations=self.rs.llm_calls)
+            self.rs.stop_reason = "test_failure"
+            return ActionOutcome(new_state=AgentState.FAILED, finished=True)
+        if (
+            self.task_type in (TaskType.MODIFY, TaskType.DEBUG)
+            and self.agent.progress.patches_applied == 0
+        ):
+            if not self.rs.patchless_finish_rejected:
+                self.rs.patchless_finish_rejected = True
+                msg = (
+                    "ERROR: this is a modification task and no patch has been "
+                    "applied, so it is NOT complete. Do NOT finish. Your next "
+                    'action MUST be a plan: {"action":"plan",'
+                    '"files":["..."],"summary":"..."} using the context '
+                    "already loaded. You will then apply the patch."
+                )
+                self._vprint("[verbose] WARNING: patch-less finish rejected")
+                self.agent.last_tool_result = msg
+                self.agent.working_context.add_fact(msg)
+                self._log_event(
+                    "patchless_finish", state=state.value, accepted=False
+                )
+                return ActionOutcome()
+            self.rs.finish_summary = str(action.get("summary", "Done."))
+            self._vprint(f"[verbose] FINISH: {self.rs.finish_summary}")
+            self._log_event("finish", state=state.value, iterations=self.rs.llm_calls)
+            self._log_event(
+                "patchless_finish", state=state.value, accepted=True
+            )
+            self.rs.stop_reason = "completed_without_patch"
+            return ActionOutcome(new_state=AgentState.DONE, finished=True)
         self.rs.finish_summary = str(action.get("summary", "Done."))
         self._vprint(f"[verbose] FINISH: {self.rs.finish_summary}")
         self._log_event("finish", state=state.value, iterations=self.rs.llm_calls)
@@ -143,7 +181,7 @@ class ActionHandler:
 
     def _read_symbol(self, action: dict[str, Any], state: AgentState) -> ActionOutcome:
         path = str(action.get("path", ""))
-        symbol = str(action.get("symbol", ""))
+        symbol = strip_receiver_prefix(str(action.get("symbol", "")))
         sym_kind = action.get("kind")
         sym_receiver = action.get("receiver")
 
@@ -249,7 +287,31 @@ class ActionHandler:
         return ActionOutcome(new_state=AgentState.PLAN)
 
     def _apply_patch(self, action: dict[str, Any], state: AgentState) -> ActionOutcome:
-        patch_text = str(action.get("patch", ""))
+        patch_text = str(action.get("patch") or "")
+        if not patch_text.strip():
+            msg = (
+                "ERROR: apply_patch requires a non-empty 'patch' field "
+                "containing a unified diff. Return the same action with "
+                "the patch included."
+            )
+            self.agent.last_tool_result = msg
+            self.agent.working_context.add_fact(msg)
+            self._log_event(
+                "invalid_action",
+                action="apply_patch",
+                state=state.value,
+                reason="missing_patch_field",
+            )
+            return ActionOutcome()
+        if patch_text.lstrip().startswith("@@"):
+            target = ""
+            files = action.get("files")
+            if isinstance(files, list) and files:
+                target = str(files[0])
+            elif action.get("path"):
+                target = str(action["path"])
+            if target:
+                patch_text = f"--- a/{target}\n+++ b/{target}\n" + patch_text.lstrip()
         tool_output = self.agent.tools.apply_patch(patch_text)
         self.rs.tool_calls += 1
 
@@ -301,6 +363,28 @@ class ActionHandler:
             return ActionOutcome(new_state=AgentState.VERIFY)
 
         compact = tool_output[-4000:]
+        added = [
+            line[1:].strip()
+            for line in patch_text.split("\n")
+            if line.startswith("+")
+            and not line.startswith("+++")
+            and line[1:].strip()
+        ]
+        if added:
+            diff_proc = subprocess.run(
+                ["git", "diff"],
+                cwd=self.agent.repo,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if all(line in diff_proc.stdout for line in added):
+                compact = (
+                    "PATCH NOT APPLIED: this exact change is already "
+                    "present in the working tree. Do NOT resend it. "
+                    "Compare the TEST FAILURE with the ACTIVE CODE and "
+                    "write a DIFFERENT patch.\n" + compact
+                )
         self.agent.last_tool_result = compact
         self.agent.working_context.add_fact(f"apply_patch FAILED\n{compact}")
         self._vprint("[verbose] patch FAILED")

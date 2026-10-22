@@ -25,6 +25,9 @@ include = ["mini_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: end-to-end tests against a live Ollama server (opt-in via RUN_OLLAMA_TESTS=1)",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "mini_agent/experiments.py" = ["S110", "BLE001"]
