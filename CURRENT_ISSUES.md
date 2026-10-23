@@ -75,9 +75,14 @@ remain v4/v5 LSP and impact-graph territory (`ROADMAP.md`).
 
 ### 4.3 Repository map is still repository-wide
 
-`build_repo_map` prioritizes files by task tokens but is not aggressively
-narrowed for localized MODIFY/DEBUG tasks. For a tiny localized change the
-model still receives a full-map view plus the auto-loaded symbol.
+Resolved in v3.1.9: for localized MODIFY/DEBUG runs (exact-symbol
+auto-load resolved a target), the map is focused — the auto-loaded
+symbol's file and directory lead every section, and the SYMBOLS
+section is capped at 10 files instead of 60. Runs without a resolved
+target keep the repository-wide prioritized map for discovery, and
+INSPECT is unchanged. The map is built after the auto-load in setup,
+and the post-patch rebuild keeps the focus (auto symbols + patched
+files). Regression tests in `tests/test_v319_hardening.py`.
 
 ### 4.4 Long-run bookkeeping lists are not bounded
 

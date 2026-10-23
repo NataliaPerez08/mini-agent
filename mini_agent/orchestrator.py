@@ -381,18 +381,6 @@ class Orchestrator:
     def _setup(self, task_type: TaskType) -> tuple[RunState, ActionHandler, dict[str, Any]]:
         """Preflight, budget computation, fast path, and run bookkeeping."""
         agent = self.agent
-        agent.repo_map = build_repo_map(
-            agent.repo,
-            agent.scan,
-            symbol_index=agent.symbol_index,
-            task=self.task,
-            max_chars=(
-                MAX_REPO_MAP_CHARS_INSPECT
-                if task_type == TaskType.INSPECT
-                else MAX_REPO_MAP_CHARS
-            ),
-        )
-        print_preflight(agent.scan, agent.symbol_index, agent.repo_map, agent._vprint)
         agent._vprint("\n[verbose] === AGENT START ===")
         agent._vprint(f"[verbose] repo: {agent.repo}")
         agent._vprint(f"[verbose] task: {self.task}")
@@ -495,6 +483,21 @@ class Orchestrator:
                 )
 
         agent._vprint(f"[verbose] initial_state: {state.value.upper()}")
+
+        focus_paths = [s.split("::")[0] for s in rs.auto_symbols]
+        agent.repo_map = build_repo_map(
+            agent.repo,
+            agent.scan,
+            symbol_index=agent.symbol_index,
+            task=self.task,
+            max_chars=(
+                MAX_REPO_MAP_CHARS_INSPECT
+                if task_type == TaskType.INSPECT
+                else MAX_REPO_MAP_CHARS
+            ),
+            focus_files=focus_paths,
+        )
+        print_preflight(agent.scan, agent.symbol_index, agent.repo_map, agent._vprint)
 
         agent._transition(AgentState.DISCOVER, state)
 

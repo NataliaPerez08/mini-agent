@@ -682,6 +682,41 @@ The change is additive repair context — capped, deduped, budget-free
 — and its value appears when failures point at collaborators that
 are not yet loaded, which this benchmark task does not exercise.
 
+### v3.1.9 — Focused Repository Map (CURRENT_ISSUES 4.3)
+
+Status: implemented (HARNESS_VERSION v3.1.9).
+
+Motivation:
+
+For a localized MODIFY/DEBUG task the model received a repository-wide
+map (up to 60 symbol files) plus the auto-loaded target symbol. The
+map's breadth is a discovery mechanism for untargeted tasks; once the
+exact-symbol auto-load has resolved a target, that breadth is noise.
+
+Changes:
+
+* `build_repo_map(..., focus_files=...)`: when focus files are given,
+  every section is ordered focus-first (focus file, then its
+  directory, then the previous tiers: task-token match, important,
+  non-test, test), and the SYMBOLS section is capped at
+  `MAX_FOCUSED_FILES_IN_MAP = 10` files instead of 60. The FILES
+  section keeps its character budget but is ordered by the same
+  tiers.
+* The orchestrator builds the map after the exact-symbol auto-load
+  and passes the auto-loaded symbol paths as focus. Runs without a
+  resolved target (no exact symbol match) keep the repository-wide
+  map — narrowing must not remove the discovery mechanism when the
+  harness could not localize the task. INSPECT is unchanged.
+* The post-patch map rebuild (action handler) keeps the focus:
+  auto-loaded symbol paths plus patched files, so repair-cycle
+  prompts stay narrow.
+* `repo_map_chars` (already recorded per run) captures the effect.
+
+Regression tests: `tests/test_v319_hardening.py` (focus-first
+ordering, neighborhood before unrelated, focused cap vs wide map,
+FILES ordering, no-focus unchanged, orchestrator passes focus,
+post-patch rebuild keeps focus).
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in

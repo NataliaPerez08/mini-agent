@@ -403,6 +403,10 @@ class ActionHandler:
                     if self.task_type == TaskType.INSPECT
                     else MAX_REPO_MAP_CHARS
                 ),
+                focus_files=(
+                    [s.split("::")[0] for s in self.rs.auto_symbols]
+                    + list(self.rs.patched_files)
+                ),
             )
 
             added, removed = _count_diff_lines(tool_output)
