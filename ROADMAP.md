@@ -666,6 +666,22 @@ path resolution variants, repair-prompt content, already-loaded
 dedup, line-without-symbol skip, repeated-failure dedup, read-budget
 untouched).
 
+Post-v3.1.8 baseline on the HARD task (3 runs per model, temperature
+0, same repo/task/test command as the v3.1.7 table):
+
+| Model                 | Solve | Stop reason               | LLM calls | Patches | Tests | Elapsed (median) |
+|-----------------------|-------|---------------------------|-----------|---------|-------|------------------|
+| qwen2.5-coder:7b      | 0/3   | test_failure              | 5–7       | 3       | 3     | ~228s            |
+| qwen2.5-coder:14b     | 0/3   | llm_call_budget_exhausted | 8         | 0       | 0     | ~496s            |
+
+Reading the table honestly: outcomes are unchanged from v3.1.7, as
+expected. On this task the failure diagnostics point at `Validate`
+and the test symbols, which are already auto-loaded at setup, so the
+diagnostic loader is a no-op here (the already-loaded dedup path).
+The change is additive repair context — capped, deduped, budget-free
+— and its value appears when failures point at collaborators that
+are not yet loaded, which this benchmark task does not exercise.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
