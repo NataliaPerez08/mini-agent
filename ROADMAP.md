@@ -605,6 +605,67 @@ Reading the table honestly:
   the live test gates on the reliably-solvable task above.
 * Failed runs are experimental data; both tables stay as recorded.
 
+### v3.1.8 — Diagnostic-Driven Repair Context (v7 core, no LSP)
+
+Status: implemented (HARNESS_VERSION v3.1.8).
+
+Motivation:
+
+The v7 phase planned LSP-backed diagnostic repair, but its core loop —
+failure output already names where the problem is — is deterministic
+and does not need LSP:
+
+```text
+VERIFY fails
+  |
+  v
+parse file:line from test output   (no LLM call)
+  |
+  v
+resolve path (exact / go.mod-relative / basename)
+  |
+  v
+SymbolIndex.at_line -> innermost symbol
+  |
+  v
+auto-load snippet into repair context
+```
+
+Changes:
+
+* `SymbolIndex.at_line(path, line)`: innermost indexed symbol
+  containing a line. The index is already refreshed post-patch
+  (v3.1.6 `reindex_files`), so diagnostic line numbers match the
+  post-patch index.
+* `_parse_failure_locations` (orchestrator): extracts `file:line`
+  pairs from go test output (`validator_test.go:22:`), go compile
+  errors (`./pkg/file.go:68:5:`), pytest short summaries
+  (`tests/x.py:15:`), and pytest tracebacks
+  (`File "src/x.py", line 42`). Deduped, capped at 12 locations.
+  Non-path colon-number pairs (`example.com:8080`) are rejected by
+  path resolution: a candidate must exist in the repository scan.
+* `_resolve_failure_path`: maps diagnostic paths to repo-relative
+  files — exact match, go.mod-prefix (tests run from a module
+  subdirectory), then basename match preferring patched files'
+  directories.
+* `_load_diagnostic_symbols`: on verification failure, before
+  entering REPAIR, auto-loads up to 3 diagnostic symbols that are not
+  already in the working context (v3.1.7 snippet refresh keeps loaded
+  symbols current, so re-loading would be duplication). Emits
+  `auto_symbol_read` with `reason="test_failure_diagnostic"` and the
+  source `file:line`. Pre-loads do not consume the model's read-action
+  budget (v3.1.6 precedent: pre-loads are not model decisions).
+
+Out of scope (kept for later phases): LSP references/definitions (v4+),
+impact graph (v5), and the v8 context-compaction half of v7 ("do not
+resend the entire working context per repair").
+
+Regression tests: `tests/test_v318_hardening.py` (parser formats,
+noise rejection, dedupe/cap, `at_line` innermost/boundaries/misses,
+path resolution variants, repair-prompt content, already-loaded
+dedup, line-without-symbol skip, repeated-failure dedup, read-budget
+untouched).
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
@@ -754,6 +815,12 @@ Capabilities may include:
 Verification remains deterministic.
 
 ### v7 — Diagnostic-Driven Repair
+
+Status: core loop implemented deterministically in v3.1.8 (parse
+diagnostic -> map to symbol -> auto-load repair context, no LSP). What
+remains for this phase: LSP-backed definitions/references (v4+) and
+the context-compaction half ("do not resend the entire working
+context"), which moves to v8.
 
 Goal:
 

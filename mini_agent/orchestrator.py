@@ -219,6 +219,31 @@ class RunState:
         return soft_msg
 
 
+_FAILURE_LOCATION_RE = re.compile(r"([\w./-]+\.\w{1,4}):(\d+)")
+_PYTEST_FILE_LINE_RE = re.compile(r'File "([^"]+)", line (\d+)')
+
+
+def _parse_failure_locations(output: str) -> list[tuple[str, int]]:
+    """Extract (path, line) pairs from test/compiler diagnostics.
+
+    Covers go test failures (validator_test.go:22:), go compile errors
+    (./pkg/file.go:68:5:), pytest short summaries (tests/x.py:15:) and
+    pytest tracebacks (File "src/x.py", line 42). Non-path matches are
+    rejected later by path resolution.
+    """
+    seen: set[tuple[str, int]] = set()
+    locations: list[tuple[str, int]] = []
+    pairs = _FAILURE_LOCATION_RE.findall(output) + _PYTEST_FILE_LINE_RE.findall(
+        output
+    )
+    for path, line in pairs:
+        entry = (path, int(line))
+        if entry not in seen:
+            seen.add(entry)
+            locations.append(entry)
+    return locations[:12]
+
+
 class Orchestrator:
     """Drives the state machine for one task.
 
@@ -247,6 +272,91 @@ class Orchestrator:
                 if (is_pytest or is_go) and tf not in related:
                     related.append(tf)
         return related
+
+    def _resolve_failure_path(self, raw: str, patched_files: list[str]) -> str:
+        """Map a diagnostic path to a repo-relative file, or "".
+
+        Handles the three observed shapes: repo-relative, module-root
+        relative (go test run from a go.mod subdirectory), and bare
+        basenames (go test prints package-relative paths). Paths that do
+        not exist in the repository are rejected; existence is the noise
+        filter for non-path colon-number pairs.
+        """
+        raw = raw.strip().removeprefix("./")
+        files = self.agent.scan.files
+        file_set = set(files)
+        if raw in file_set:
+            return raw
+        for f in files:
+            if Path(f).name == "go.mod":
+                parent = str(Path(f).parent)
+                if parent != ".":
+                    candidate = f"{parent}/{raw}"
+                    if candidate in file_set:
+                        return candidate
+        base = Path(raw).name
+        matches = [f for f in files if Path(f).name == base]
+        if len(matches) == 1:
+            return matches[0]
+        patched_dirs = {str(Path(pf).parent) for pf in patched_files}
+        preferred = [m for m in matches if str(Path(m).parent) in patched_dirs]
+        if len(preferred) == 1:
+            return preferred[0]
+        return ""
+
+    def _load_diagnostic_symbols(
+        self, output: str, rs: RunState, code_budget: int
+    ) -> None:
+        """Auto-load symbols named by file:line failure diagnostics.
+
+        The failure output already says where the problem is; fetching
+        that symbol costs no LLM call (v7 core loop, deterministic).
+        Pre-loads do not consume the model's read-action budget.
+        """
+        agent = self.agent
+        loaded = 0
+        for raw, line in _parse_failure_locations(output):
+            if loaded >= 3:
+                break
+            path = self._resolve_failure_path(raw, rs.patched_files)
+            if not path:
+                continue
+            sym = agent.symbol_index.at_line(path, int(line))
+            if sym is None:
+                continue
+            key = f"read_symbol {sym.path}::{sym.name}"
+            if key in agent.working_context.symbol_snippets:
+                continue
+            content = agent.tools.read_symbol(sym.path, sym.name)
+            if content.startswith("ERROR"):
+                continue
+            agent.progress.record_symbol_read(sym.path, sym.name)
+            rs.symbol_reads += 1
+            rs.symbol_context_chars += len(content)
+            rs.auto_symbols.append(f"{sym.path}::{sym.name}")
+            agent.working_context.add_snippet(
+                key,
+                content[-4000:],
+                budget=code_budget,
+                is_symbol=True,
+            )
+            rs.tool_calls += 1
+            agent._vprint(
+                f"[verbose] diagnostic-symbol: {sym.path}::{sym.name} "
+                f"({len(content)} chars, from {raw}:{line})"
+            )
+            agent._log_event(
+                "auto_symbol_read",
+                path=sym.path,
+                symbol=sym.name,
+                kind=sym.kind,
+                start_line=sym.start_line,
+                end_line=sym.end_line,
+                chars=len(content),
+                reason="test_failure_diagnostic",
+                diagnostic=f"{raw}:{line}",
+            )
+            loaded += 1
 
     def _run_verification(self, patched_files: list[str]) -> tuple[bool, str, bool]:
         """Run deterministic verification.
@@ -405,6 +515,7 @@ class Orchestrator:
             "symbol_candidates_str": symbol_candidates_str,
             "git_commit": git_commit,
             "repo_dirty": repo_dirty,
+            "code_budget": code_budget,
         }
         return rs, handler, setup
 
@@ -421,6 +532,7 @@ class Orchestrator:
         symbol_candidates_str: str = setup["symbol_candidates_str"]
         git_commit = setup["git_commit"]
         repo_dirty = setup["repo_dirty"]
+        code_budget: int = setup["code_budget"]
 
         max_loop = effective_hard_limit * 3 + 10
         loop_count = 0
@@ -493,6 +605,7 @@ class Orchestrator:
                     else:
                         rs.verification_failed = True
                         rs.test_failure = test_output[-4000:]
+                        self._load_diagnostic_symbols(test_output, rs, code_budget)
                         if rs.repair_cycles >= MAX_REPAIR_CYCLES:
                             rs.stop_reason = "test_failure"
                             prev = state

@@ -102,6 +102,21 @@ class SymbolIndex:
             return results
         return [s for s in self.symbols if s.path == path and s.name.lower() == name.lower()]
 
+    def at_line(self, path: str, line: int) -> Symbol | None:
+        """Innermost indexed symbol containing a line, if any."""
+        self._ensure_indexed()
+        containing = [
+            s
+            for s in self._by_file.get(path, [])
+            if s.start_line <= line <= s.end_line
+        ]
+        if not containing:
+            return None
+        return min(
+            containing,
+            key=lambda s: (s.end_line - s.start_line, s.start_line),
+        )
+
     def find_candidates(self, keywords: list[str]) -> list[Symbol]:
         self._ensure_indexed()
         seen: set[int] = set()

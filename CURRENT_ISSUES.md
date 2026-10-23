@@ -84,6 +84,16 @@ model still receives a full-map view plus the auto-loaded symbol.
 Resolved in v3.1.7: `RunState.record_repeat` keeps only the last three
 entries. Regression test in `tests/test_v317_hardening.py`.
 
+### 4.5 Repair context ignores failure diagnostics
+
+Resolved in v3.1.8: on verification failure the harness parses
+`file:line` pairs from the test output (go test, go compile, pytest),
+maps them to symbols via `SymbolIndex.at_line`, and auto-loads up to 3
+not-yet-loaded symbols into the repair context before entering REPAIR
+(`auto_symbol_read` with `reason="test_failure_diagnostic"`; no
+read-budget consumption). Regression tests in
+`tests/test_v318_hardening.py`.
+
 ## 5. Observability
 
 Resolved in v3.1.2 (regression tests in `tests/test_observability.py`):
