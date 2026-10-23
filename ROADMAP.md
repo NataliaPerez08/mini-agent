@@ -760,6 +760,33 @@ extraction, aggregate dedupe/cap, index population, reindex refresh,
 ambiguity-aware callers, disambiguation tiebreak with and without
 path mention, map annotation, integration through a MODIFY run).
 
+### v3.2.1 — Insertion-Cluster Anchoring (CURRENT_ISSUES 8.3)
+
+Status: implemented (HARNESS_VERSION v3.2.1).
+
+Motivation:
+
+The removal-anchored fallback aborted entirely when a hunk contained
+an insertion-only cluster (pure + lines). Measurement first: git
+apply -C1 already rescues most pure-insertion hunks via context
+reduction and offset search, so the anchor's residual value is hunks
+git rejects atomically — a hallucinated context line breaks the whole
+hunk while individual clusters are sound, a shape the 14B's narrative
+diffs produce.
+
+Changes:
+
+* `_anchor_apply`: insertion-only clusters anchor on their preceding
+  context line when it matches exactly one whitespace-insensitive
+  file position; the additions insert right after it. No context
+  line, or an ambiguous one, fails loudly (a wrong-position insert is
+  worse than a loud failure). Removal clusters keep their existing
+  removal-anchored logic; mixed hunks apply cluster by cluster.
+
+Regression tests: `tests/test_v321_hardening.py` (git-rejects sanity
+check, mixed-cluster apply, no-context loud failure, unique and
+whitespace-flexible leading anchors, ambiguous refusal).
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in

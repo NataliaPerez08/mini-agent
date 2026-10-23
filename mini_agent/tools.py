@@ -303,9 +303,25 @@ class RepoTools:
 
         file_lines = fpath.read_text(errors="replace").splitlines()
         for leading, rems, adds in clusters:
-            if not rems or not any(r.strip() for r in rems):
-                return False
             normalized = [norm(l) for l in file_lines]
+            if not rems:
+                # Insertion-only cluster: anchor on the preceding
+                # context line. No context, or an ambiguous one, fails
+                # loudly rather than guessing a position.
+                if not adds or not leading.strip():
+                    return False
+                anchors = [
+                    i
+                    for i, l in enumerate(normalized)
+                    if l == norm(leading)
+                ]
+                if len(anchors) != 1:
+                    return False
+                pos = anchors[0] + 1
+                file_lines[pos:pos] = adds
+                continue
+            if not any(r.strip() for r in rems):
+                return False
             want = [norm(r) for r in rems]
             matches = [
                 i

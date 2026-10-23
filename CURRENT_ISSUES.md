@@ -169,6 +169,17 @@ not from git history.
   fallback (no removal lines to anchor on); they fail loudly with
   `CURRENT CONTENT` feedback. Revisit if live runs show them.
 
+  Resolved in v3.2.1, with the scope corrected by measurement:
+  `git apply -C1` already rescues most pure-insertion hunks via
+  context reduction and offset search, so the anchor's residual value
+  is hunks git rejects atomically — e.g. a hallucinated context line
+  breaks the whole hunk while individual clusters are sound. One
+  insertion cluster used to abort the entire anchor fallback; now
+  insertion clusters anchor on their preceding context line when it
+  matches exactly one whitespace-insensitive position (no context or
+  an ambiguous one still fails loudly). Regression tests in
+  `tests/test_v321_hardening.py`.
+
 ## Severity summary
 
 | Area | Low | Medium | High |
