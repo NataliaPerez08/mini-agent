@@ -28,45 +28,37 @@ import (
     "iptables-visualizer/internal/models"
 )
 
-func TestValidateEmptyNameReportsSingleIssue(t *testing.T) {
+func TestValidateEmptyRulesMessage(t *testing.T) {
     v := NewValidator()
     result := v.Validate(&models.Policy{
-        Name: "",
-        Rules: []models.Rule{{
-            Name:     "web",
-            Action:   models.ActionAccept,
-            Protocol: models.ProtocolTCP,
-            Enabled:  true,
-        }},
+        Name:  "web",
+        Rules: []models.Rule{},
     })
 
     if result.Valid {
-        t.Error("policy with empty name must be invalid")
+        t.Error("policy without rules must be invalid")
     }
 
-    nameIssues := 0
+    found := false
     for _, iss := range result.Issues {
-        if iss.Field == "name" {
-            nameIssues++
-            if iss.Message != "policy name is required" {
-                t.Errorf("unexpected name issue: %s", iss.Message)
+        if iss.Field == "rules" {
+            found = true
+            if iss.Message != "policy must have at least one rule" {
+                t.Errorf("unexpected rules message: %s", iss.Message)
             }
         }
     }
-    if nameIssues != 1 {
-        t.Errorf(
-            "expected exactly 1 name issue for empty policy name, got %d: %+v",
-            nameIssues, result.Issues,
-        )
+    if !found {
+        t.Error("expected a rules issue for policy without rules")
     }
 }
 """
 
 MODIFY_TASK = (
     "Corrige Validate en internal/engine/validator.go para que pase el test "
-    "TestValidateEmptyNameReportsSingleIssue: un nombre de politica vacio "
-    "debe producir unicamente el error 'policy name is required' y no "
-    "tambien el error de formato del nombre"
+    "TestValidateEmptyRulesMessage: cuando una politica no tiene reglas, el "
+    "issue de campo rules debe tener el mensaje 'policy must have at least "
+    "one rule' y no 'policy must contain at least one rule'."
 )
 
 
@@ -195,6 +187,36 @@ def visualizer_repo(tmp_path: Path) -> Path:
     return repo
 
 
+class _LoggingModel:
+    """Wraps the real model, dumping prompts/responses when
+    OLLAMA_DEBUG_LOG points to a directory. For live-run diagnosis."""
+
+    def __init__(self, inner, log_dir: Path):
+        self.inner = inner
+        self.log_dir = log_dir
+        self.n = 0
+
+    def __setattr__(self, name, value):
+        if name != "inner" and hasattr(self, "inner"):
+            setattr(self.inner, name, value)
+        object.__setattr__(self, name, value)
+
+    def chat(self, system, user):
+        import time as _time
+
+        self.n += 1
+        t0 = _time.time()
+        resp = self.inner.chat(system, user)
+        dt = _time.time() - t0
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        (self.log_dir / f"call{self.n}.txt").write_text(
+            f"=== SYSTEM ({len(system)} chars) ===\n{system}\n\n"
+            f"=== USER ({len(user)} chars) ===\n{user}\n\n"
+            f"=== RESPONSE ({dt:.1f}s) ===\n{resp}\n"
+        )
+        return resp
+
+
 class TestLiveOllamaModify:
     def test_modify_validator_with_real_verification(
         self, ollama_server, ollama_model, visualizer_repo, tmp_path
@@ -210,6 +232,9 @@ class TestLiveOllamaModify:
             timeout=float(os.environ.get("OLLAMA_TEST_TIMEOUT", "300")),
         )
         llm.temperature = 0.0
+        debug_log = os.environ.get("OLLAMA_DEBUG_LOG")
+        if debug_log:
+            llm = _LoggingModel(llm, Path(debug_log))
         agent = CodingAgent(
             visualizer_repo,
             llm,

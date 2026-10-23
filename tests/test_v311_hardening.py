@@ -110,14 +110,15 @@ class TestModelOutputContract:
         assert result.final_state == "done"
         assert any("'action'" in m for m in agent.memory)
 
-    def test_repeated_invalid_output_hits_soft_bound(
+    def test_repeated_invalid_output_fails_deterministically(
         self, git_repo_with_files: Path
     ) -> None:
         model = StubModel([json.dumps({"foo": "bar"})] * 4)
         agent = CodingAgent(git_repo_with_files, model, "")
         result = agent.run("Do nothing.")
-        assert any("identical invalid output repeated" in m for m in agent.memory)
-        assert result.iterations <= 5
+        assert result.final_state == "failed"
+        assert result.stop_reason == "invalid_output"
+        assert result.iterations <= 3
 
     def test_invalid_output_does_not_reach_state_machine(
         self, git_repo_with_files: Path

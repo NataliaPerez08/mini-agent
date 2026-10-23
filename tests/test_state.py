@@ -164,8 +164,8 @@ class TestAllowedActions:
         assert "plan" in actions
         assert "apply_patch" not in actions
 
-    def test_edit_only_apply_patch(self):
-        assert ALLOWED_ACTIONS[AgentState.EDIT] == {"apply_patch"}
+    def test_edit_apply_patch_and_finish(self):
+        assert ALLOWED_ACTIONS[AgentState.EDIT] == {"apply_patch", "finish"}
 
     def test_plan_only_plan(self):
         assert ALLOWED_ACTIONS[AgentState.PLAN] == {"plan"}
@@ -177,7 +177,7 @@ class TestAllowedActions:
         actions = ALLOWED_ACTIONS[AgentState.REPAIR]
         assert "apply_patch" in actions
         assert "read_file" in actions
-        assert "finish" not in actions
+        assert "finish" in actions
 
     def test_done_no_actions(self):
         assert ALLOWED_ACTIONS[AgentState.DONE] == set()
@@ -202,8 +202,8 @@ class TestValidateAction:
     def test_finish_in_read(self):
         assert validate_action(AgentState.READ, "finish")
 
-    def test_finish_not_in_edit(self):
-        assert not validate_action(AgentState.EDIT, "finish")
+    def test_finish_in_edit_escape_hatch(self):
+        assert validate_action(AgentState.EDIT, "finish")
 
     def test_plan_in_read(self):
         assert validate_action(AgentState.READ, "plan")

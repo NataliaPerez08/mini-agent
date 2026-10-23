@@ -61,9 +61,9 @@ ALLOWED_ACTIONS: dict[AgentState, set[str]] = {
     AgentState.DISCOVER: {"read_file", "read_symbol", "search_code", "finish"},
     AgentState.READ: {"read_file", "read_symbol", "search_code", "finish", "plan"},
     AgentState.PLAN: {"plan"},
-    AgentState.EDIT: {"apply_patch"},
+    AgentState.EDIT: {"apply_patch", "finish"},
     AgentState.VERIFY: set(),
-    AgentState.REPAIR: {"read_file", "read_symbol", "apply_patch"},
+    AgentState.REPAIR: {"read_file", "read_symbol", "apply_patch", "finish"},
     AgentState.DONE: set(),
     AgentState.FAILED: set(),
 }
@@ -85,6 +85,7 @@ MAX_READ_ACTIONS: dict[TaskType, int] = {
 }
 
 MAX_REPAIR_CYCLES = 2
+MAX_CONSECUTIVE_INVALID = 3
 MAX_GLOBAL_ITERATIONS = 12
 GENERATE_FINAL_SUMMARY = False
 

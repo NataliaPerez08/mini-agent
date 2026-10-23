@@ -31,6 +31,7 @@ from .state import (
     BUDGET_WARNING,
     FAST_PATH_MAX_CHARS,
     MAX_CODE_CONTEXT_CHARS,
+    MAX_CONSECUTIVE_INVALID,
     MAX_READ_ACTIONS,
     MAX_RELEVANT_SYMBOLS,
     MAX_REPAIR_CYCLES,
@@ -188,8 +189,16 @@ class RunState:
     stop_reason: str = ""
     patchless_finish_rejected: bool = False
     verification_failed: bool = False
+    consecutive_invalid: int = 0
     budget_exhausted_logged: bool = False
     budget_recovery_used: bool = False
+
+    def record_repeat(self, entry: str) -> None:
+        """Track the last actions for the 3x-identical check only."""
+        self.repeated.append(entry)
+        if len(self.repeated) > 3:
+            del self.repeated[:-3]
+
     symbol_reads: int = 0
     full_file_reads: int = 0
     symbol_context_chars: int = 0
@@ -256,7 +265,7 @@ class Orchestrator:
         else:
             self.agent._vprint(f"[verbose] test command: {self.agent.tools.test_command}")
             output = self.agent.tools.run_tests()
-        passed = "EXIT_CODE=0" in output
+        passed = output.split("\n", 1)[0] == "EXIT_CODE=0"
         return passed, output, True
 
     def _setup(self, task_type: TaskType) -> tuple[RunState, ActionHandler, dict[str, Any]]:
@@ -663,27 +672,28 @@ class Orchestrator:
                         reason="model_output_contract",
                         detail=output_error,
                     )
-                    rs.repeated.append(f"<invalid:{output_error}>")
-                    if (
-                        len(rs.repeated) >= 3
-                        and rs.repeated[-1] == rs.repeated[-2] == rs.repeated[-3]
-                    ):
-                        msg = (
-                            "ERROR: identical invalid output repeated 3 times. "
-                            "You MUST answer now using the context already loaded. "
-                            'Return exactly one action: '
-                            '{"action": "finish", "summary": "your answer"}'
+                    rs.record_repeat(f"<invalid:{output_error}>")
+                    rs.consecutive_invalid += 1
+                    if rs.consecutive_invalid >= MAX_CONSECUTIVE_INVALID:
+                        agent._log_event(
+                            "budget_exhausted",
+                            budget="consecutive_invalid",
+                            used=rs.consecutive_invalid,
+                            limit=MAX_CONSECUTIVE_INVALID,
+                            state=state.value,
                         )
-                        agent.last_tool_result = msg
-                        agent._vprint(f"[verbose] WARNING: {msg}")
-                        agent.working_context.add_fact(msg)
+                        rs.stop_reason = "invalid_output"
+                        prev = state
+                        state = AgentState.FAILED
+                        agent._transition(prev, state)
+                        break
                     continue
 
                 kind = str(action.get("action", ""))
 
                 agent._vprint(f"[verbose] action: {kind}")
 
-                rs.repeated.append(str(action))
+                rs.record_repeat(str(action))
                 if len(rs.repeated) >= 3 and rs.repeated[-1] == rs.repeated[-2] == rs.repeated[-3]:
                     msg = (
                         "ERROR: identical action repeated 3 times. Do NOT repeat it. "
@@ -743,6 +753,7 @@ class Orchestrator:
                     continue
 
                 rs.consecutive_duplicates = 0
+                rs.consecutive_invalid = 0
 
                 outcome = handler.handle(kind, action, state)
                 if outcome.new_state is not None and validate_transition(

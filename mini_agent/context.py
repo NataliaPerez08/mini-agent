@@ -180,13 +180,29 @@ def build_state_prompt(
     code_str = "\n".join(code_lines[-8:]) or "<none>"
 
     if state in ("discover", "read"):
-        sections = [f"TASK\n{task}", f"REPOSITORY MAP\n{repo_map}"]
+        sections = [f"TASK\n{task}"]
+        if task_type in ("modify", "debug"):
+            sections.append(
+                "TASK TYPE: modification. 'finish' will be REJECTED until a "
+                "patch has been applied and tests pass. Proceed: plan, then "
+                "apply_patch."
+            )
+        sections.append(f"REPOSITORY MAP\n{repo_map}")
         if symbol_candidates:
             sections.append(f"RELEVANT SYMBOL CANDIDATES\n{symbol_candidates}")
         if auto_read:
             sections.append(f"AUTO-READ CONTENT\n{auto_read}")
         if code_str != "<none>":
             sections.append(f"ACTIVE CODE\n{code_str}")
+        loaded = [
+            line.split("\n", 1)[0]
+            for line in code_lines
+            if line.startswith(("read_symbol ", "read_file "))
+        ]
+        if loaded:
+            sections.append(
+                "ALREADY LOADED (do NOT read again):\n" + "\n".join(loaded)
+            )
         sections.append(f"WORKING MEMORY\n{mem}")
         sections.append(f"GIT STATUS\n{status}")
         if tool_result and tool_result not in code_str:

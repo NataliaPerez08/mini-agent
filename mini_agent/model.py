@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -62,7 +63,35 @@ class OpenAICompatModel:
         return content
 
 
-def extract_json_object(text: str) -> dict[str, Any]:
+def _first_json_object(text: str) -> str | None:
+    """Return the first balanced JSON object in text, string-aware."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _strip_code_fence(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -70,15 +99,19 @@ def extract_json_object(text: str) -> dict[str, Any]:
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+    return text
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    text = _strip_code_fence(text)
 
     try:
         return json.loads(text, strict=False)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        obj = _first_json_object(text)
+        if obj is None:
             raise ValueError(f"Model did not return JSON: {text[:500]}")
-        return json.loads(text[start : end + 1], strict=False)
+        return json.loads(obj, strict=False)
 
 
 def validate_action_object(action: object) -> str:
@@ -110,16 +143,46 @@ def validate_action_object(action: object) -> str:
     return ""
 
 
+def _extract_patch_lenient(text: str) -> dict[str, Any] | None:
+    """Last-resort repair for patch actions with broken JSON strings.
+
+    Small models emit correct unified diffs but break the JSON encoding
+    (typically unescaped quotes inside the patch string). When the whole
+    output fails to parse, locate the "patch" value directly: from the
+    opening quote to the last quote whose tail is only closing syntax.
+    """
+    m = re.search(r'"patch"\s*:\s*"', text)
+    if not m:
+        return None
+    start = m.end()
+    for end in range(len(text) - 1, start, -1):
+        if text[end] != '"':
+            continue
+        if text[end + 1 :].strip().strip("}],").strip() == "":
+            patch = text[start:end]
+            if "\\n" in patch and "\n" not in patch:
+                patch = (
+                    patch.replace("\\n", "\n")
+                    .replace('\\"', '"')
+                    .replace("\\\\", "\\")
+                )
+            return {"action": "apply_patch", "patch": patch}
+    return None
+
+
 def parse_model_output(text: str) -> tuple[dict[str, Any] | None, str | None]:
     """Parse raw model output into (action_dict, error_message).
 
     Returns (None, error_message) for malformed JSON and for objects that
-    violate the canonical action contract.
+    violate the canonical action contract. A patch action whose JSON is
+    broken only inside the patch string is repaired leniently.
     """
     try:
         action = extract_json_object(text)
     except ValueError as exc:
-        return None, f"Model output is not valid JSON: {exc}"
+        action = _extract_patch_lenient(_strip_code_fence(text))
+        if action is None:
+            return None, f"Model output is not valid JSON: {exc}"
     error = validate_action_object(action)
     if error:
         return None, error

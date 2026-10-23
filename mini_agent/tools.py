@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -13,31 +14,54 @@ def normalize_patch(patch: str) -> str:
     """Repair common small-model unified-diff defects before git apply.
 
     Context lines must start with a space marker; models often emit the
-    raw code line (e.g. a tab) or an empty line instead. Well-formed
-    patches pass through unchanged.
+    raw code line (e.g. a tab) or an empty line instead. Hunk line
+    counts are recomputed from the actual content (models miscount).
+    Well-formed patches pass through unchanged.
     """
     lines = patch.split("\n")
     trailing_newline = lines and lines[-1] == ""
     if trailing_newline:
         lines.pop()
     out: list[str] = []
-    in_hunk = False
+    hunk: list[str] = []
+
+    def flush_hunk() -> None:
+        if not hunk:
+            return
+        header = hunk[0]
+        old = sum(
+            1
+            for l in hunk[1:]
+            if l[:1] in (" ", "-") and not l.startswith("---")
+        )
+        new = sum(
+            1
+            for l in hunk[1:]
+            if l[:1] in (" ", "+") and not l.startswith("+++")
+        )
+        m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", header)
+        if m:
+            header = f"@@ -{m.group(1)},{old} +{m.group(2)},{new} @@{header.split('@@', 2)[2]}"
+        out.extend([header, *hunk[1:]])
+        hunk.clear()
+
     for line in lines:
         if line.startswith("@@"):
-            in_hunk = True
-            out.append(line)
+            flush_hunk()
+            hunk.append(line)
         elif line.startswith("diff --git"):
-            in_hunk = False
+            flush_hunk()
             out.append(line)
-        elif in_hunk:
+        elif hunk:
             if not line:
-                out.append(" ")
+                hunk.append(" ")
             elif line[0] not in " +-\\":
-                out.append(" " + line)
+                hunk.append(" " + line)
             else:
-                out.append(line)
+                hunk.append(line)
         else:
             out.append(line)
+    flush_hunk()
     return "\n".join(out) + ("\n" if trailing_newline else "")
 
 
@@ -125,6 +149,32 @@ class RepoTools:
         out = (proc.stdout + proc.stderr).strip()
         return out[:12000] if out else "<no matches>"
 
+    def find_files_with_line(self, line: str) -> list[str]:
+        """Repo-relative paths of files containing a line, matching any
+        whitespace run (the model often writes spaces where the file has
+        tabs)."""
+        rx = re.escape(" ".join(line.split())).replace(r"\ ", r"\s+")
+        proc = subprocess.run(
+            [
+                "rg",
+                "-l",
+                "--hidden",
+                "--glob",
+                "!.git",
+                "--",
+                rx,
+                ".",
+            ],
+            cwd=self.repo,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return sorted(
+            p[2:] if p.startswith("./") else p
+            for p in proc.stdout.strip().splitlines()
+        )
+
     def apply_patch(self, patch: str) -> str:
         proc = subprocess.run(
             [
@@ -143,7 +193,54 @@ class RepoTools:
             check=False,
         )
         if proc.returncode != 0:
-            return f"PATCH FAILED\n{proc.stderr.strip()}"
+            rev = subprocess.run(
+                [
+                    "git",
+                    "apply",
+                    "--reverse",
+                    "--check",
+                    "--whitespace=nowarn",
+                    "--ignore-whitespace",
+                    "--recount",
+                    "-",
+                ],
+                cwd=self.repo,
+                input=normalize_patch(patch),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if rev.returncode == 0:
+                return (
+                    "PATCH ALREADY APPLIED\n"
+                    "This exact change is already present in the working tree."
+                )
+            out = self._anchor_apply(normalize_patch(patch))
+            if out:
+                diff = subprocess.run(
+                    ["git", "diff", "--"],
+                    cwd=self.repo,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                return "PATCH APPLIED\n" + diff.stdout[-12000:]
+            m = re.search(r"patch failed: (\S+):(\d+)", proc.stderr)
+            out = f"PATCH FAILED\n{proc.stderr.strip()}"
+            if m:
+                fpath = self._safe_path(m.group(1))
+                if fpath.is_file():
+                    lines = fpath.read_text(errors="replace").splitlines()
+                    line = int(m.group(2))
+                    lo, hi = max(1, line - 8), min(len(lines), line + 8)
+                    ctx = "\n".join(
+                        f"{i}: {lines[i - 1]}" for i in range(lo, hi + 1)
+                    )
+                    out += (
+                        f"\n\nCURRENT CONTENT of {m.group(1)} around line "
+                        f"{line} (your patch context does not match this):\n{ctx}"
+                    )
+            return out
         diff = subprocess.run(
             ["git", "diff", "--"],
             cwd=self.repo,
@@ -152,6 +249,83 @@ class RepoTools:
             check=False,
         )
         return "PATCH APPLIED\n" + diff.stdout[-12000:]
+
+    def _anchor_apply(self, patch: str) -> bool:
+        """Last-resort apply anchored on each change cluster's removal
+        lines.
+
+        Small models write correct removal/addition lines but omit
+        context lines in the middle of the hunk (git apply rejects
+        that). A cluster is a consecutive run of -/+ lines. When a
+        cluster's removal lines appear consecutively at exactly one
+        whitespace-insensitive file position, and the nearest context
+        line above the cluster exists near that position, replace the
+        removal span with the addition lines.
+        """
+        target = self._patch_target(patch)
+        if not target:
+            return False
+        fpath = self._safe_path(target)
+        if not fpath.is_file():
+            return False
+        clusters: list[tuple[str, list[str], list[str]]] = []
+        leading = ""
+        rems: list[str] = []
+        adds: list[str] = []
+
+        def flush() -> None:
+            nonlocal rems, adds
+            if rems or adds:
+                clusters.append((leading, rems, adds))
+            rems, adds = [], []
+
+        in_hunk = False
+        for line in patch.splitlines():
+            if line.startswith(("--- ", "+++ ")):
+                continue
+            if line.startswith("@@"):
+                flush()
+                in_hunk = True
+                leading = ""
+            elif not in_hunk:
+                continue
+            elif line.startswith("-"):
+                rems.append(line[1:])
+            elif line.startswith("+"):
+                adds.append(line[1:])
+            else:
+                flush()
+                leading = line[1:]
+        flush()
+
+        def norm(s: str) -> str:
+            return " ".join(s.split())
+
+        file_lines = fpath.read_text(errors="replace").splitlines()
+        for leading, rems, adds in clusters:
+            if not rems or not any(r.strip() for r in rems):
+                return False
+            normalized = [norm(l) for l in file_lines]
+            want = [norm(r) for r in rems]
+            matches = [
+                i
+                for i in range(len(file_lines) - len(want) + 1)
+                if normalized[i : i + len(want)] == want
+            ]
+            if len(matches) != 1:
+                return False
+            pos = matches[0]
+            if leading.strip():
+                window = normalized[max(0, pos - 10) : pos + 10]
+                if norm(leading) not in window:
+                    return False
+            file_lines[pos : pos + len(rems)] = adds
+        fpath.write_text("\n".join(file_lines) + "\n")
+        return True
+
+    def _patch_target(self, patch: str) -> str:
+        m = re.search(r"--- a/(\S+)", patch)
+        return m.group(1) if m else ""
 
     def _go_test_command(self, test_files: list[str]) -> str:
         """Build a package-targeted `go test` for the given test files.

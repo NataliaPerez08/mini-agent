@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -115,13 +114,21 @@ class ActionHandler:
         ):
             if not self.rs.patchless_finish_rejected:
                 self.rs.patchless_finish_rejected = True
-                msg = (
-                    "ERROR: this is a modification task and no patch has been "
-                    "applied, so it is NOT complete. Do NOT finish. Your next "
-                    'action MUST be a plan: {"action":"plan",'
-                    '"files":["..."],"summary":"..."} using the context '
-                    "already loaded. You will then apply the patch."
-                )
+                if state in (AgentState.EDIT, AgentState.REPAIR):
+                    msg = (
+                        "ERROR: this is a modification task and no patch has "
+                        "been applied, so it is NOT complete. Do NOT finish. "
+                        "Your next action MUST be apply_patch: fix the patch "
+                        "using the failure feedback and the CURRENT CONTENT."
+                    )
+                else:
+                    msg = (
+                        "ERROR: this is a modification task and no patch has "
+                        "been applied, so it is NOT complete. Do NOT finish. "
+                        'Your next action MUST be a plan: {"action":"plan",'
+                        '"files":["..."],"summary":"..."} using the context '
+                        "already loaded. You will then apply the patch."
+                    )
                 self._vprint("[verbose] WARNING: patch-less finish rejected")
                 self.agent.last_tool_result = msg
                 self.agent.working_context.add_fact(msg)
@@ -286,6 +293,31 @@ class ActionHandler:
         self.agent.working_context.add_fact(f"plan: {plan_summary}")
         return ActionOutcome(new_state=AgentState.PLAN)
 
+    def _refresh_patched_snippets(self) -> None:
+        """Re-read working-context snippets for patched files.
+
+        Without this, repair prompts show the pre-patch content and the
+        model writes patches against stale (hallucinated) code.
+        """
+        wc = self.agent.working_context
+        for key in list(wc.symbol_snippets):
+            ref = key.split(" ", 1)[1] if " " in key else ""
+            path, sep, symbol = ref.rpartition("::")
+            if sep and any(path == pf or path.startswith(pf + "/") for pf in self.rs.patched_files):
+                fresh = self.agent.tools.read_symbol(path, symbol)
+                if fresh.startswith("FILE:"):
+                    wc.add_snippet(
+                        key,
+                        fresh[-4000:],
+                        budget=self.code_budget,
+                        is_symbol=True,
+                    )
+        for key in list(wc.active_snippets):
+            path = key.split(" ", 1)[1] if key.startswith("read_file ") else ""
+            if path and path in self.rs.patched_files:
+                fresh = self.agent.tools.read_file(path)
+                wc.add_snippet(key, fresh[-4000:], budget=self.code_budget)
+
     def _apply_patch(self, action: dict[str, Any], state: AgentState) -> ActionOutcome:
         patch_text = str(action.get("patch") or "")
         if not patch_text.strip():
@@ -310,8 +342,37 @@ class ActionHandler:
                 target = str(files[0])
             elif action.get("path"):
                 target = str(action["path"])
-            if target:
-                patch_text = f"--- a/{target}\n+++ b/{target}\n" + patch_text.lstrip()
+            if not target:
+                ctx = [
+                    line[1:].strip()
+                    for line in patch_text.splitlines()
+                    if line[:1] in (" ", "-")
+                    and not line.startswith("---")
+                    and line[1:].strip()
+                ]
+                if ctx:
+                    candidates = self.agent.tools.find_files_with_line(
+                        max(ctx, key=len)
+                    )
+                    if len(candidates) == 1:
+                        target = candidates[0]
+            if not target:
+                msg = (
+                    "ERROR: the patch has no ---/+++ headers and no "
+                    "files/path to identify the target file. Return the "
+                    "same action with a 'files': [\"path\"] field or full "
+                    "diff headers."
+                )
+                self.agent.last_tool_result = msg
+                self.agent.working_context.add_fact(msg)
+                self._log_event(
+                    "invalid_action",
+                    action="apply_patch",
+                    state=state.value,
+                    reason="missing_patch_target",
+                )
+                return ActionOutcome()
+            patch_text = f"--- a/{target}\n+++ b/{target}\n" + patch_text.lstrip()
         tool_output = self.agent.tools.apply_patch(patch_text)
         self.rs.tool_calls += 1
 
@@ -331,6 +392,7 @@ class ActionHandler:
                 self.agent.repo, self.agent.symbol_index, self.rs.patched_files
             )
             self.agent.tools.symbol_index = self.agent.symbol_index
+            self._refresh_patched_snippets()
             self.agent.repo_map = build_repo_map(
                 self.agent.repo,
                 self.agent.scan,
@@ -363,28 +425,13 @@ class ActionHandler:
             return ActionOutcome(new_state=AgentState.VERIFY)
 
         compact = tool_output[-4000:]
-        added = [
-            line[1:].strip()
-            for line in patch_text.split("\n")
-            if line.startswith("+")
-            and not line.startswith("+++")
-            and line[1:].strip()
-        ]
-        if added:
-            diff_proc = subprocess.run(
-                ["git", "diff"],
-                cwd=self.agent.repo,
-                text=True,
-                capture_output=True,
-                check=False,
+        if tool_output.startswith("PATCH ALREADY APPLIED"):
+            compact = (
+                "PATCH NOT APPLIED: this exact change is already "
+                "present in the working tree. Do NOT resend it. "
+                "Compare the TEST FAILURE with the ACTIVE CODE and "
+                "write a DIFFERENT patch.\n" + compact
             )
-            if all(line in diff_proc.stdout for line in added):
-                compact = (
-                    "PATCH NOT APPLIED: this exact change is already "
-                    "present in the working tree. Do NOT resend it. "
-                    "Compare the TEST FAILURE with the ACTIVE CODE and "
-                    "write a DIFFERENT patch.\n" + compact
-                )
         self.agent.last_tool_result = compact
         self.agent.working_context.add_fact(f"apply_patch FAILED\n{compact}")
         self._vprint("[verbose] patch FAILED")
@@ -403,6 +450,4 @@ class ActionHandler:
             removed_lines=None,
         )
 
-        if state in (AgentState.EDIT, AgentState.REPAIR):
-            return ActionOutcome(new_state=AgentState.READ)
         return ActionOutcome()

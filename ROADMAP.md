@@ -490,6 +490,121 @@ Regression tests: `tests/test_tools.py` (Go targeting),
 `tests/test_observability.py` (multi-symbol trace),
 `tests/test_v316_hardening.py` (pre-load budget).
 
+### v3.1.7 — Model-Output and Patch Mechanics Hardening
+
+Status: implemented (HARNESS_VERSION v3.1.7).
+
+Motivation:
+
+A full day of live 14B runs against the MODIFY benchmark exposed a
+chain of deterministic defects. Each fix below corresponds to an
+observed failing transcript and has a regression test; none was
+speculative.
+
+Model-output fixes:
+
+* JSON extraction now returns the first *balanced* object instead of
+  merging the first brace to the last (prose with trailing braces no
+  longer corrupts the payload) — CURRENT_ISSUES 1.1;
+* verification reads the `EXIT_CODE` marker from the first output line
+  only, so a test binary that prints `EXIT_CODE=0` in its own output
+  cannot be misread as passing — CURRENT_ISSUES 1.2;
+* three consecutive malformed outputs fail deterministically with
+  `stop_reason="invalid_output"` (new `MAX_CONSECUTIVE_INVALID` budget);
+  alternating malformed outputs can no longer evade the old
+  3x-identical soft bound, and the dead soft-bound branch was removed —
+  CURRENT_ISSUES 3.1/3.2;
+* `RunState.repeated` keeps only the last three entries — CURRENT_ISSUES
+  4.4;
+* `parse_model_output` repairs patch actions whose JSON string encoding
+  is broken (typically unescaped quotes inside the diff) by extracting
+  the `patch` value directly; fence stripping is shared with
+  `extract_json_object`.
+
+Patch-mechanics fixes:
+
+* the already-applied check is `git apply --reverse --check` (strict
+  context), replacing a substring heuristic that falsely rejected
+  *different* repair patches whose short added lines (`return result`,
+  `}`) appeared anywhere in the diff;
+* failed patches report the current file content around the failure
+  line (`CURRENT CONTENT ...`), giving the model actionable feedback
+  instead of a bare "does not apply";
+* working-context snippets for patched files are re-read after a
+  successful patch, so repair prompts show post-patch code instead of
+  the stale pre-patch fragments the model was hallucinating against;
+* `normalize_patch` recomputes hunk line counts from actual content
+  (models miscount; git needs `--recount`, GNU patch has no
+  equivalent);
+* headerless patches with no `files`/`path` infer the target file by
+  searching the repo for the hunk's longest context line
+  (whitespace-flexible); an ambiguous or missing target is a structured
+  `missing_patch_target` failure instead of a confusing git error;
+* a removal-anchored fallback applies patches whose context has
+  mid-hunk gaps (the model omits lines between its anchor and the
+  change; git apply rejects false adjacency claims). Each change
+  cluster's removal lines must match at exactly one
+  whitespace-insensitive file position, with the nearest context line
+  present within a ±10-line window; otherwise the patch fails loudly.
+  This fallback replaced a GNU `patch --fuzz` tier that was observed
+  applying patches at wrong positions.
+
+State-machine fixes:
+
+* a failed patch keeps the model in EDIT/REPAIR to retry immediately
+  with the failure feedback (previously the transition to READ made the
+  model's corrected patch illegal and the fix was lost);
+* `finish` is legal in EDIT/REPAIR as an escape hatch: the existing
+  patchless-finish guard rejects the first attempt with a state-aware
+  message and accepts the second as `completed_without_patch`;
+* discover/read prompts state the modification-task contract up front
+  ("finish will be REJECTED until a patch is applied") and list
+  already-loaded symbols ("do NOT read again"), eliminating the two
+  systematic wasted calls (duplicate read + premature finish) observed
+  in every pre-v3.1.7 live run.
+
+Live-test task change:
+
+The live test task moved from the if/else restructuring (empty-name
+validation) to a single-string change (empty-rules message). The old
+task sits at the 14B's semantic edge: identical code and prompts
+produced different first patches across ollama sessions (the v3.1.6
+3/3 baseline was one lucky session; the same commit failed 0/3 in
+another). The old task is preserved verbatim in
+`experiments/baseline_modify.py` (`HARD_TASK`) for honest capability
+tracking; the live test needs a task the model passes reliably so it
+can gate harness plumbing. Post-v3.1.7 the live run completes in 3 LLM
+calls (~130s): narrative diff -> actionable failure feedback ->
+corrected patch -> anchor-apply -> targeted verify -> done.
+
+Regression tests: `tests/test_v317_hardening.py` (JSON extraction,
+lenient patch parsing, EXIT_CODE first-line, consecutive-invalid budget,
+bounded repeats, already-applied strictness, snippet refresh,
+headerless-target inference, position/anchor fallbacks, stay-in-EDIT
+retry), plus updated contracts in `tests/test_state.py` and
+`tests/test_v311_hardening.py`.
+
+Post-v3.1.7 baseline on the HARD task (3 runs per model, temperature 0,
+same repo/task/test command as the v3.1.6 table):
+
+| Model                 | Solve | Stop reason               | LLM calls | Patches | Tests | Elapsed (median) |
+|-----------------------|-------|---------------------------|-----------|---------|-------|------------------|
+| qwen2.5-coder:7b      | 0/3   | test_failure              | 5–7       | 3       | 3     | ~231s            |
+| qwen2.5-coder:14b     | 0/3   | llm_call_budget_exhausted | 8         | 0       | 0     | ~499s            |
+
+Reading the table honestly:
+
+* The 7B moved from mechanical death (v3.1.6: 0 patches,
+  `llm_call_budget_exhausted` in ~51s) to semantic failure: it now
+  applies 3 patches and runs the tests 3 times per run. The harness
+  unblocked the mechanics; what remains is model capability.
+* The 14B's v3.1.6 3/3 was one lucky ollama session. In the v3.1.7
+  session the same code and task produced narrative diffs that never
+  converged (0 patches). The hard task sits at the 14B's edge; it stays
+  in `experiments/baseline_modify.py` for capability tracking, while
+  the live test gates on the reliably-solvable task above.
+* Failed runs are experimental data; both tables stay as recorded.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
