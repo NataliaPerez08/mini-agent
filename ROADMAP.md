@@ -717,6 +717,49 @@ ordering, neighborhood before unrelated, focused cap vs wide map,
 FILES ordering, no-focus unchanged, orchestrator passes focus,
 post-patch rebuild keeps focus).
 
+### v3.2.0 — Reference Index (v5-lite, no LSP)
+
+Status: implemented (HARNESS_VERSION v3.2.0).
+
+Motivation:
+
+The v5 phase planned an impact graph, but its cheapest useful slice
+is deterministic and needs no graph database: record which top-level
+symbols call which names, and use that signal where same-name
+ambiguity or impact awareness matters.
+
+Changes:
+
+* `mini_agent/references.py`: per-file call-site extraction — Go via
+  tree-sitter (`call_expression`, identifier and selector callees),
+  Python via stdlib `ast` (`Name` and `Attribute` callees). Caller
+  keys are `path::Symbol` for calls inside a top-level symbol,
+  `path` for module-level calls. Name-level by design: no type or
+  qualifier resolution (LSP stays the v4 upgrade path).
+* `SymbolIndex.references` (name -> caller keys, deduped, capped at
+  20 per name) is populated by `build_symbol_index` in the same file
+  loop and refreshed by `reindex_files` for patched files.
+* `SymbolIndex.callers_of(path, name)`: ambiguity-aware lookup — all
+  references for a unique name, same-directory references only when
+  same-name symbols exist (same-directory call sites are
+  unambiguous for the definition side).
+* CURRENT_ISSUES 4.2 tiebreak: `find_exact_task_symbols` prefers,
+  among same-name candidates, the one with more same-directory call
+  sites (after the task-text path mention, before index order).
+* Focused repo map annotation: task symbols are annotated with their
+  callers (`<- called by: Name (path)`, max 3), giving MODIFY/DEBUG
+  prompts impact awareness without loading caller code (reference
+  lines are cheap; fragments stay one `read_symbol` away).
+
+Out of scope: LSP definitions/references (v4), a persistent graph,
+callee expansion, and automatic caller-code loading (context budget
+discipline).
+
+Regression tests: `tests/test_v320_references.py` (Python and Go
+extraction, aggregate dedupe/cap, index population, reindex refresh,
+ambiguity-aware callers, disambiguation tiebreak with and without
+path mention, map annotation, integration through a MODIFY run).
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in

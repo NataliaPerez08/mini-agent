@@ -67,11 +67,16 @@ budget. Regression tests in `tests/test_symbols.py`,
 
 ### 4.2 Ambiguous same-name symbols not disambiguated
 
-Partially addressed in v3.1.6: same-name candidates prefer the one whose
-file is named in the task text, so "Corrige Validate en
-internal/engine/validator.go" resolves the engine's `Validate`. Without
-a path mention, the first index entry still wins; caller/import signals
-remain v4/v5 LSP and impact-graph territory (`ROADMAP.md`).
+Resolved in v3.2.0 (heuristically): a name-level reference index
+(v5-lite, `mini_agent/references.py`) records call sites per file
+during symbol indexing. Same-name candidates prefer, in order: a file
+named in the task text (v3.1.6), then the candidate with more
+same-directory call sites, then index order. The focused repo map
+annotates task symbols with their callers (`<- called by:`), showing
+all references for unique names and same-directory references only
+for ambiguous ones. This is name-level matching without type or
+qualifier resolution — true reference resolution remains v4 (LSP)
+territory. Regression tests in `tests/test_v320_references.py`.
 
 ### 4.3 Repository map is still repository-wide
 

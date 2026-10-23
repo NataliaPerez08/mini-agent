@@ -496,6 +496,7 @@ class Orchestrator:
                 else MAX_REPO_MAP_CHARS
             ),
             focus_files=focus_paths,
+            focus_symbols=rs.auto_symbols,
         )
         print_preflight(agent.scan, agent.symbol_index, agent.repo_map, agent._vprint)
 

@@ -6,8 +6,8 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from pathlib import Path
 
+from .references import aggregate_references, extract_file_references
 from .scanner import RepoScan
 
 MAX_SIGNATURE_CHARS = 300
@@ -63,6 +63,7 @@ class SymbolIndex:
     errors: int = 0
     truncated: bool = False
     index_elapsed_seconds: float = 0.0
+    references: dict[str, list[str]] = field(default_factory=dict)
     _by_name: dict[str, list[Symbol]] = field(default_factory=dict, repr=False)
     _by_file: dict[str, list[Symbol]] = field(default_factory=dict, repr=False)
     _finalized: bool = field(default=False, repr=False)
@@ -136,6 +137,32 @@ class SymbolIndex:
     def by_name(self, name: str, limit: int = 10) -> list[Symbol]:
         self._ensure_indexed()
         return list(self._by_name.get(name.lower(), [])[:limit])
+
+    def same_dir_callers(self, path: str, name: str) -> list[str]:
+        """Caller keys referencing `name` from `path`'s directory.
+
+        Name-level heuristic (v5-lite): same-directory call sites are
+        unambiguous for the definition side, so they are a safe signal
+        for disambiguation and annotation.
+        """
+        directory = str(Path(path).parent)
+        callers: list[str] = []
+        for key in self.references.get(name, []):
+            caller_file = key.split("::", 1)[0]
+            if caller_file and str(Path(caller_file).parent) == directory:
+                callers.append(key)
+        return callers
+
+    def callers_of(self, path: str, name: str) -> list[str]:
+        """Caller keys for a symbol, ambiguity-aware.
+
+        Unique name in the index: all references count. Multiple
+        same-name symbols: only same-directory references count.
+        """
+        self._ensure_indexed()
+        if len(self._by_name.get(name.lower(), [])) <= 1:
+            return list(self.references.get(name, []))
+        return self.same_dir_callers(path, name)
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +254,10 @@ def find_exact_task_symbols(
     Deterministic and accent-insensitive: task words that exactly match
     indexed symbol names resolve to symbols, longest word first, so a
     task like "Corrige ApplyPolicy para que use validatePorts" resolves
-    both ApplyPolicy and validatePorts. One symbol per word; ambiguous
-    same-name symbols still resolve to index order (CURRENT_ISSUES 4.2).
+    both ApplyPolicy and validatePorts. One symbol per word; same-name
+    ambiguity prefers a file named in the task text, then the candidate
+    with more same-directory call sites (v5-lite reference signal),
+    then index order.
     """
     symbols._ensure_indexed()
     raw = _normalize_accents(task)
@@ -248,15 +277,23 @@ def find_exact_task_symbols(
     for wl in sorted(ordered, key=lambda w: -len(w)):
         candidates = list(symbols._by_name.get(wl, [])[:limit])
         if candidates:
-            # Same-name ambiguity: prefer a candidate whose file is
+            # Same-name ambiguity, in order: a candidate whose file is
             # named in the task text (e.g. "Corrige Validate en
-            # internal/engine/validator.go" resolves the engine's
-            # Validate, not the handler's).
+            # internal/engine/validator.go"), then the candidate with
+            # more call sites from its own directory (v5-lite
+            # reference signal; CURRENT_ISSUES 4.2).
             sym = next(
                 (c for c in candidates if c.path.lower() in task_lower
                  or Path(c.path).name.lower() in task_lower),
-                candidates[0],
+                None,
             )
+            if sym is None and len(candidates) > 1:
+                sym = max(
+                    candidates,
+                    key=lambda c: len(symbols.same_dir_callers(c.path, c.name)),
+                )
+            if sym is None:
+                sym = candidates[0]
             key = (sym.path, sym.name)
             if key not in loaded:
                 loaded.add(key)
@@ -544,6 +581,7 @@ def build_symbol_index(
     repo = repo.resolve()
     start = time.time()
     all_symbols: list[Symbol] = []
+    per_file_refs: list[list[tuple[str, str]]] = []
     files_parsed = 0
     errors = 0
     truncated = False
@@ -572,6 +610,7 @@ def build_symbol_index(
             errors += 1
         remaining = MAX_SYMBOLS_TOTAL - len(all_symbols)
         all_symbols.extend(syms[:remaining])
+        per_file_refs.append(extract_file_references(full, rel))
 
     elapsed = time.time() - start
     return SymbolIndex(
@@ -580,6 +619,7 @@ def build_symbol_index(
         errors=errors,
         truncated=truncated,
         index_elapsed_seconds=round(elapsed, 4),
+        references=aggregate_references(per_file_refs),
     )
 
 
@@ -587,7 +627,19 @@ def reindex_files(
     repo: Path, index: SymbolIndex, files: list[str]
 ) -> SymbolIndex:
     repo = repo.resolve()
-    existing = [s for s in index.symbols if s.path not in set(files)]
+    patched = set(files)
+    existing = [s for s in index.symbols if s.path not in patched]
+    per_file_refs: list[list[tuple[str, str]]] = []
+    # keep references from untouched files, drop the patched files' old
+    # caller keys, and re-extract them
+    for name, callers in index.references.items():
+        kept = [
+            c
+            for c in callers
+            if c.split("::", 1)[0] not in patched
+        ]
+        if kept:
+            per_file_refs.append([(name, c) for c in kept])
     for rel in files:
         full = repo / rel
         suffix = full.suffix.lower()
@@ -598,4 +650,7 @@ def reindex_files(
         except Exception:  # noqa: BLE001
             syms = []
         existing.extend(syms)
-    return SymbolIndex(symbols=existing)
+        per_file_refs.append(extract_file_references(full, rel))
+    return SymbolIndex(
+        symbols=existing, references=aggregate_references(per_file_refs)
+    )

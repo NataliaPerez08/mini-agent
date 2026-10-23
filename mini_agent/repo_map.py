@@ -118,6 +118,7 @@ def build_repo_map(
     task: str = "",
     max_chars: int = MAX_REPO_MAP_CHARS,
     focus_files: list[str] | None = None,
+    focus_symbols: list[str] | None = None,
 ) -> str:
     repo = repo.resolve()
     if symbol_index is None:
@@ -126,7 +127,10 @@ def build_repo_map(
         )
 
     task_tokens = _tokenize_task(task) if task else []
-    focus = {f for f in (focus_files or []) if f}
+    focus_syms = {s for s in (focus_symbols or []) if s}
+    focus = {f for f in (focus_files or []) if f} | {
+        s.split("::")[0] for s in focus_syms
+    }
     focus_dirs = {str(Path(f).parent) for f in focus}
 
     sections: list[str] = []
@@ -195,6 +199,21 @@ def build_repo_map(
                 break
             lines.append(line)
             block_used += len(line) + 1
+            if f"{rel}::{sym.name}" in focus_syms:
+                callers = symbol_index.callers_of(rel, sym.name)[:3]
+                if callers:
+                    rendered = ", ".join(
+                        (
+                            f"{c.split('::', 1)[1]} ({c.split('::', 1)[0]})"
+                            if "::" in c
+                            else c
+                        )
+                        for c in callers
+                    )
+                    caller_line = f"    <- called by: {rendered}"
+                    if block_used + len(caller_line) + 1 <= block_budget:
+                        lines.append(caller_line)
+                        block_used += len(caller_line) + 1
         if len(lines) <= 1:
             continue
         block = "\n".join(lines)

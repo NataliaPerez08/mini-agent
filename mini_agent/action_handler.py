@@ -407,6 +407,7 @@ class ActionHandler:
                     [s.split("::")[0] for s in self.rs.auto_symbols]
                     + list(self.rs.patched_files)
                 ),
+                focus_symbols=self.rs.auto_symbols,
             )
 
             added, removed = _count_diff_lines(tool_output)

@@ -1,3 +1,3 @@
 from __future__ import annotations
 
-HARNESS_VERSION = "v3.1.9"
+HARNESS_VERSION = "v3.2.0"
