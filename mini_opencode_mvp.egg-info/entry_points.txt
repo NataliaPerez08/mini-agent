@@ -1,2 +1,0 @@
-[console_scripts]
-mini-agent = mini_agent.cli:main

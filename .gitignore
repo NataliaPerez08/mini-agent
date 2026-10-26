@@ -21,3 +21,4 @@ symbol-test/
 
 # docs
 docs/
+*.egg-info/
