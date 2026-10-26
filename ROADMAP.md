@@ -822,6 +822,84 @@ Changes:
 The post-v3.2.2 sweep table lives below, after the v3.1.8/v3.2.x
 tables.
 
+### v3.2 Verified Baseline (closure)
+
+Status: closed on the v3.2.1 harness + v3.2.2 suite tooling.
+
+P0 — dependencies and full suite:
+
+* `pip install -e ".[dev]"` against `pyproject.toml` (httpx, pydantic,
+  tree-sitter, tree-sitter-go; pytest dev extra).
+* Fake-model suite: 488 passed, 1 skipped (the skip is the live
+  ollama test without `RUN_OLLAMA_TESTS=1` — the only optional test).
+* Live test (`RUN_OLLAMA_TESTS=1`): pass on the closing commits.
+* Attribution: every `runs.jsonl` record carries `harness_version` +
+  `git_commit` + `model` + full task text.
+
+P0 — real-model experiments (3 runs per model per task, temperature 0,
+same repo/test command/budgets), v3.2.1 harness:
+
+| Model            | msg (easy) | mid (medium) | hard (hard) |
+|------------------|------------|--------------|-------------|
+| qwen2.5-coder:7b | 3/3        | 0/3          | 0/3         |
+| qwen2.5-coder:14b| 3/3        | 3/3          | 0/3         |
+
+P1 — v3.1.9 vs v3.2.1 (same tasks, models, budgets; v3.1.9 run from a
+git worktree at `92cd9d1` with the same suite runner):
+
+| Model | Task | v3.1.9 | v3.2.1 | Notes |
+|-------|------|--------|--------|-------|
+| 7b    | msg  | 2/3    | 3/3    | within session variance |
+| 7b    | mid  | 0/3    | 0/3    | different stop reasons, same outcome |
+| 7b    | hard | 0/3    | 0/3    | identical: test_failure, 5 calls, 3 patches |
+| 14b   | msg  | 3/3    | 3/3    | identical medians: 3 calls, ~5.7k prompt tok |
+| 14b   | mid  | 3/3    | 3/3    | identical medians: 3 calls, 77s |
+| 14b   | hard | 0/3    | 0/3    | 14B occasionally unblocks (1 test_failure run in the v3.2.1 sweep), still 0/3 |
+
+Honest reading: the v3.2.0/v3.2.1 features (reference index,
+insertion-cluster anchoring) produced no measurable solve-rate or
+efficiency change on this suite — these tasks have unambiguous symbols
+and git-applicable patches, so the new machinery is not exercised. No
+regression either: identical efficiency on solved tasks, identical
+selection. The features remain infrastructure for the cases they were
+built for (same-name ambiguity, broken hunks).
+
+P1 — symbol-selection accuracy (strict ground truth: the target
+symbol plus the task's test symbol; everything else selected is a
+distractor; `experiments/analyze_runs.py` over `runs.jsonl` + traces):
+
+* Recall: 1.00 on every task, model, and version — the deterministic
+  auto-load always puts the relevant symbols in context; no run ever
+  had to hunt for the target.
+* Precision: 0.67 on nearly every group. The persistent "distractor"
+  is `Validator` (the struct, L23-L23): the task text mentions
+  "validator.go", the path word "validator" exactly matches the struct
+  name, so it is auto-loaded. Benign one-line over-selection, uniform
+  across versions. The only lower value is 7b/mid on v3.2.1 (0.40:
+  the model additionally read `validateRule` and `ValidationIssue`
+  while failing to plan).
+* Model-initiated distractor reads correlate with failure: solvers
+  read nothing beyond the auto-load; the 7B's failing mid runs read
+  two extra symbols and never produced a patch.
+
+P1 — efficiency (medians per solved run, v3.2.1):
+
+| Model | Task | LLM calls | Prompt tok | Completion tok | Elapsed |
+|-------|------|-----------|------------|----------------|---------|
+| 7b    | msg  | 5-6       | ~13.2k     | ~344           | ~120s   |
+| 14b   | msg  | 3         | ~5.7k      | ~479           | ~164s   |
+| 14b   | mid  | 3         | ~5.8k      | ~279           | ~77s    |
+
+Failed runs cost their full budget: 7b mid/hard exhaust 5-8 calls
+(~11-25k prompt tokens); 14b hard exhausts 8 calls (~14.5k prompt
+tokens, ~500s) producing narrative diffs that never converge.
+
+Capability gradient (the suite's purpose): easy string changes are
+solved by both models; severity semantics are solved by the 14B in
+the minimum 3 calls while the 7B dies exploring (8 calls, no patch);
+control-flow restructuring is solved by neither. This is the baseline
+that future harness changes (v9 reviewer, v8 compaction) must beat.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
