@@ -947,6 +947,100 @@ the minimum 3 calls while the 7B dies exploring (8 calls, no patch);
 control-flow restructuring is solved by neither. This is the baseline
 that future harness changes (v9 reviewer, v8 compaction) must beat.
 
+### H1/H2 Experiments — v3.2.2 vs v3.1.9 (amb + valid)
+
+Status: complete. 24 paired runs (2 tasks x 2 models x 3 rounds x 2
+versions), interleaved (version innermost, so each paired main/worktree
+run executes back-to-back inside the same ollama session; fixed
+recorded order). Historical control (msg/mid/hard) reused from the
+verified baseline, not re-run. Environment parity recorded: python
+3.10.12, pip-freeze sha `17d4d1ccc1e7`, main `a8138a1`, worktree
+`92cd9d1`, runner sha identical across checkouts (`c37897b0b69b`),
+ollama 0.32.5. Three repetitions per condition: exploratory, not
+statistically conclusive.
+
+Tasks (frozen before the first run, commit `a8138a1`):
+
+* `amb` — the msg fix with NO path mention. Three same-name `Validate`
+  definitions exist (engine, HTTP handler, config); the task text
+  names none of their files. Instruments H1 (navigation efficiency)
+  principally, H2 secondarily.
+* `valid` — validity means absence of ERRORS: a warning-only policy
+  stays `Valid` with its warning issue preserved; error-only and
+  error+warning cases must stay invalid (regression guards so
+  weakening validation cannot pass). Deterministically verified
+  pristine-fail/fix-pass before the freeze. Instruments H2
+  (resolution capability) principally, H1 exploratorily.
+
+Pre-sweep selector check (deterministic, sweep condition, both
+checkouts) — this check caught a real defect before any model run:
+v3.2.1's tiebreak selected the handler's `Validate` without a path
+mention because references from a candidate's own file counted as its
+callers (fixed in v3.2.2, see above). After the fix:
+
+| variant      | v3.2.2                | v3.1.9                |
+|--------------|-----------------------|-----------------------|
+| no path      | engine `Validate`     | handler `Validate`    |
+| engine path  | engine `Validate`     | engine `Validate`     |
+| handler path | handler `Validate`    | handler `Validate`    |
+
+Results (solves/runs; medians):
+
+| Model | Task  | v3.1.9      | v3.2.2      |
+|-------|-------|-------------|-------------|
+| 7b    | amb   | 0/3 (8 calls, ~21.8k tok) | 0/3 (8 calls, ~20.8k tok) |
+| 14b   | amb   | 3/3 (2 calls, ~4.2k tok)  | 3/3 (3 calls, ~6.8k tok)  |
+| 7b    | valid | 0/3 (8 calls, ~22.0k tok) | 0/3 (8 calls, ~27.0k tok) |
+| 14b   | valid | 0/3 (6 calls, ~14.2k tok) | 0/3 (5 calls, ~12.0k tok) |
+
+H1 — mechanism confirmed, consequences absent:
+
+* Initial selection: v3.2.2 auto-loaded the engine's `Validate` in
+  6/6 amb runs; v3.1.9 auto-loaded the handler's in 6/6. The fix works
+  live, exactly as the selector check predicted.
+* Despite that, no efficiency or solve-rate improvement appeared. The
+  14B solves amb 3/3 in BOTH arms — and the wrong-selection arm was
+  cheaper (2 calls / ~4.2k tokens vs 3 / ~6.8k): with the handler's
+  symbol in context it still patched the correct file blind on the
+  first try, inferring the location from the auto-loaded test symbol's
+  path plus the quoted message. For the 14B on this task shape, the
+  target snippet in context is not even used.
+* The 7B fails amb 0/3 in both arms with the SAME failure mode:
+  correct searches, then repeated zero-change patches
+  (`files=[], added=0, removed=0`) until the budget exhausts. With
+  v3.2.2 its context was identical to the msg task (which it solves
+  2/3-4/4 with the path in the task text); removing only the path
+  mention from the task text breaks its patch construction. The 7B's
+  blocker is patch generation without a literal path, not context
+  selection.
+
+H2 — no version improves resolution; a valid experimental result:
+
+* `valid` is 0/3 in every condition. Both versions auto-load the
+  correct symbol (the task mentions the path), so selection is not
+  the differentiator: the 14B reaches the target and produces real
+  1-line patches, but does not converge on the semantic fix
+  (validity computed from error severity rather than issue count);
+  the regression guards hold — no run passed by weakening validation.
+* Per the experiment's framing, "no improvement in either version" is
+  a result: `valid` measures semantic capability at the 7B-mid
+  boundary, and neither harness version moves it.
+
+Cross-cutting finding (candidate hardening, not acted on here):
+zero-change patches are accepted as successful `apply_patch` actions,
+consume a verification cycle and budget, and give the model no useful
+feedback. They appeared in 7B amb failures (x2 per run) and 14B valid
+failures. A deterministic no-op-patch rejection (structured failure
+like `duplicate_action`, no VERIFY transition) is a small, measurable
+next change.
+
+Session-variance caveat: paired runs shared one ollama session per
+round and the interleaved order prevents condition clustering, but at
+temperature 0 single-run deltas (e.g. the 14B's 2-vs-3 calls) should
+be read as exploratory. The stable findings are the mechanism
+(selection 6/6 vs 0/6), the identical solve rates, and the repeated
+failure modes.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in

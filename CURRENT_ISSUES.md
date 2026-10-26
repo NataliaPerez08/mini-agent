@@ -197,6 +197,22 @@ not from git history.
   matches exactly one whitespace-insensitive position (no context or
   an ambiguous one still fails loudly). Regression tests in
   `tests/test_v321_hardening.py`.
+- **Zero-change patches**: both models sometimes emit patches that
+  apply but change nothing (`files=[], added=0, removed=0`). The
+  harness accepts them as successful `apply_patch` actions, consumes
+  a verification cycle and budget, and gives the model no useful
+  feedback. Observed in the H1/H2 sweep: 7B amb failures (two no-op
+  patches per run) and 14B valid failures. Candidate hardening:
+  reject no-op patches deterministically as a structured failure
+  (like `duplicate_action`) without transitioning to VERIFY. Not
+  acted on yet — recorded in the ROADMAP H1/H2 section.
+- **Patch generation without a literal path**: the 7B constructs
+  correct patches when the task text names the target file, but with
+  the path removed (identical auto-loaded context, `amb` task) it
+  emits zero-change patches until budget exhaustion. The 14B does not
+  have this dependency (it infers the file from the auto-loaded test
+  symbol's path). A 7B-capability observation, not a harness bug; it
+  bounds what context-selection improvements can achieve on the 7B.
 
 ## Severity summary
 
