@@ -173,7 +173,7 @@ def main() -> None:
                     flush=True,
                 )
                 summary.setdefault((model_name, task["id"]), []).append(
-                    result.success
+                    result.final_state == "done"
                 )
                 shutil.rmtree(tmp, ignore_errors=True)
     print("\n=== suite summary (solves/runs) ===")
