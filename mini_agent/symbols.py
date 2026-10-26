@@ -141,15 +141,22 @@ class SymbolIndex:
     def same_dir_callers(self, path: str, name: str) -> list[str]:
         """Caller keys referencing `name` from `path`'s directory.
 
-        Name-level heuristic (v5-lite): same-directory call sites are
-        unambiguous for the definition side, so they are a safe signal
-        for disambiguation and annotation.
+        Name-level heuristic (v5-lite): same-directory call sites from
+        OTHER files are a safe disambiguation signal. References from
+        the candidate's own file are excluded: a file that defines X
+        often references the name X while calling a namesake defined
+        elsewhere (e.g. a handler method calling the engine's
+        Validate), which would inflate X's own score.
         """
         directory = str(Path(path).parent)
         callers: list[str] = []
         for key in self.references.get(name, []):
             caller_file = key.split("::", 1)[0]
-            if caller_file and str(Path(caller_file).parent) == directory:
+            if (
+                caller_file
+                and caller_file != path
+                and str(Path(caller_file).parent) == directory
+            ):
                 callers.append(key)
         return callers
 
@@ -157,7 +164,8 @@ class SymbolIndex:
         """Caller keys for a symbol, ambiguity-aware.
 
         Unique name in the index: all references count. Multiple
-        same-name symbols: only same-directory references count.
+        same-name symbols: only same-directory references from other
+        files count.
         """
         self._ensure_indexed()
         if len(self._by_name.get(name.lower(), [])) <= 1:
@@ -256,8 +264,8 @@ def find_exact_task_symbols(
     task like "Corrige ApplyPolicy para que use validatePorts" resolves
     both ApplyPolicy and validatePorts. One symbol per word; same-name
     ambiguity prefers a file named in the task text, then the candidate
-    with more same-directory call sites (v5-lite reference signal),
-    then index order.
+    with more same-directory call sites from other files (v5-lite
+    reference signal), then index order.
     """
     symbols._ensure_indexed()
     raw = _normalize_accents(task)

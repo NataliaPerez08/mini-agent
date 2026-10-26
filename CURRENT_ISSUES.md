@@ -78,6 +78,17 @@ for ambiguous ones. This is name-level matching without type or
 qualifier resolution — true reference resolution remains v4 (LSP)
 territory. Regression tests in `tests/test_v320_references.py`.
 
+Hardened in v3.2.2: a pre-sweep deterministic selector check against
+the real repo's three same-name `Validate` definitions caught the
+tiebreak selecting the HTTP handler's method. Cause: references from
+a candidate's own file counted as its callers — the handler file
+references the name `Validate` while calling the ENGINE's validator
+(`Apply`) and registering its own method value, outscoring the
+engine's one genuine caller (the task's test file). `same_dir_callers`
+now counts only cross-file same-directory references. Regression
+tests: `TestOwnFileReferencesExcluded` and `TestRealRepoSelector`
+(`tests/test_v320_references.py`).
+
 ### 4.3 Repository map is still repository-wide
 
 Resolved in v3.1.9: for localized MODIFY/DEBUG runs (exact-symbol

@@ -822,6 +822,53 @@ Changes:
 The post-v3.2.2 sweep table lives below, after the v3.1.8/v3.2.x
 tables.
 
+### v3.2.2 — Own-File Reference Exclusion (HARNESS_VERSION v3.2.2)
+
+Status: implemented. (The graded-suite tooling above also carries the
+v3.2.2 label but explicitly bumped no harness version; this section is
+the first harness behavior change after v3.2.1.)
+
+Motivation:
+
+The pre-sweep deterministic selector check for the H1/H2 experiments
+(run in the exact sweep condition: the amb task's test file in place)
+caught the 4.2 tiebreak selecting the WRONG same-name symbol. Task
+text without a path mention: three `Validate` definitions exist
+(engine, HTTP handler, config); the tiebreak picked the handler's.
+
+Root cause: `same_dir_callers` counted references from the candidate's
+own file as its callers. The handler file references the name
+`Validate` twice — `Apply` calls the ENGINE's validator
+(`h.Validator.Validate(...)`), and route registration references the
+method value — outscoring the engine's single genuine same-directory
+caller (the task's test file, cross-file). A reference from a
+definition's own file is not evidence of being called: it frequently
+calls a namesake defined elsewhere.
+
+Changes:
+
+* `SymbolIndex.same_dir_callers` counts only cross-file
+  same-directory references (`caller_file != path`). Affects the 4.2
+  tiebreak and ambiguous-name map annotations (a same-file "caller"
+  annotation could be false for the same reason).
+* Selector check tooling: `experiments/selector_check.py` reproduces
+  the sweep condition and prints the selection for three task
+  variants (no path, explicit engine path, explicit handler path);
+  run in every checkout before a sweep.
+
+Regression tests: `TestOwnFileReferencesExcluded` (the defect shape:
+own-file namesake references must not win) and `TestRealRepoSelector`
+(the three real `Validate` variants in the sweep condition) in
+`tests/test_v320_references.py`.
+
+Verified selector behavior after the fix (sweep condition):
+
+| variant         | selected |
+|-----------------|----------|
+| no path         | engine `Validate` (via the test's same-dir call) |
+| engine path     | engine `Validate` (path mention wins) |
+| handler path    | handler `Validate` (no arbitrary redirect) |
+
 ### v3.2 Verified Baseline (closure)
 
 Status: closed on the v3.2.1 harness + v3.2.2 suite tooling.

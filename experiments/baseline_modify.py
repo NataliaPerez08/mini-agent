@@ -8,12 +8,15 @@ the comparison baseline required by benchmark discipline (CURRENT_ISSUES
 6.2): one task is a transcript, not a benchmark.
 
 Suite (id, difficulty, required change):
-    msg  easy   string change in an issue message
-    mid  medium severity semantics: warning -> error
-    hard hard   control flow: skip the format check for empty names
+    msg    easy   string change in an issue message
+    mid    medium severity semantics: warning -> error
+    hard   hard   control flow: skip the format check for empty names
+    amb    easy   msg fix with NO path mention (same-name disambiguation)
+    valid  medium validity = absence of errors; warnings preserved
 
 Usage:
-    python experiments/baseline_modify.py [runs_per_model] [model ...]
+    python experiments/baseline_modify.py [runs_per_model] [model ...] \
+        [--tasks id1,id2]
 """
 
 from __future__ import annotations
@@ -124,10 +127,94 @@ MID_TASK = (
     "issue de campo rules con severidad 'error' y no 'warning'"
 )
 
+# amb: the msg fix with NO path mention. Three same-name Validate
+# symbols exist (engine, handler, config); the v3.2.0 same-dir-caller
+# tiebreak must pick the engine's, index order (v3.1.9) picks the
+# handler's. H1/H2 instrument.
+AMB_TASK = MODIFY_TASK.replace(" en internal/engine/validator.go", "")
+
+VALID_TEST = """package engine
+
+import (
+	"testing"
+
+	"iptables-visualizer/internal/models"
+)
+
+func TestValidateValidityIgnoresWarnings(t *testing.T) {
+	v := NewValidator()
+
+	// warning only: valid name, no rules -> still valid
+	r1 := v.Validate(&models.Policy{Name: "web-policy", Rules: []models.Rule{}})
+	if !r1.Valid {
+		t.Error("policy with only a warning must remain valid")
+	}
+	warnings := 0
+	for _, iss := range r1.Issues {
+		if iss.Field == "rules" {
+			warnings++
+			if iss.Severity != "warning" {
+				t.Errorf("rules issue must stay a warning, got %s", iss.Severity)
+			}
+		}
+	}
+	if warnings != 1 {
+		t.Errorf("expected exactly 1 rules warning, got %d: %+v", warnings, r1.Issues)
+	}
+
+	// error only: empty name with a valid rule -> invalid
+	r2 := v.Validate(&models.Policy{
+		Name: "",
+		Rules: []models.Rule{{
+			Name:     "web",
+			Action:   models.ActionAccept,
+			Protocol: models.ProtocolTCP,
+			Enabled:  true,
+		}},
+	})
+	if r2.Valid {
+		t.Error("policy with an error must be invalid")
+	}
+
+	// error + warning: empty name and no rules -> invalid, issues preserved
+	r3 := v.Validate(&models.Policy{Name: "", Rules: []models.Rule{}})
+	if r3.Valid {
+		t.Error("policy with an error plus a warning must be invalid")
+	}
+	fields := map[string]int{}
+	for _, iss := range r3.Issues {
+		fields[iss.Field]++
+	}
+	if fields["name"] < 1 || fields["rules"] != 1 {
+		t.Errorf(
+			"expected name errors and the rules warning preserved, got %+v",
+			r3.Issues,
+		)
+	}
+}
+"""
+
+# valid: validity means absence of ERRORS; warnings are preserved and
+# must not invalidate. The fix belongs where validity is computed
+# (remove `result.Valid = len(result.Issues) == 0`; the error scan
+# already exists). Regression guards: error-only and error+warning
+# cases must stay invalid, so weakening validation cannot pass.
+# Deterministically verified: fails pristine, passes with the fix,
+# and the fix keeps the rest of the repo suite green.
+VALID_TASK = (
+    "Corrige Validate en internal/engine/validator.go para que pase el test "
+    "TestValidateValidityIgnoresWarnings: la validez debe representar ausencia "
+    "de errores; una politica sin reglas (solo warning) debe seguir siendo "
+    "valida manteniendo el issue de warning, y cualquier error debe seguir "
+    "invalidando"
+)
+
 TASKS = [
     {"id": "msg", "task": MODIFY_TASK, "test": VALIDATOR_TEST},
     {"id": "mid", "task": MID_TASK, "test": MID_TEST},
     {"id": "hard", "task": HARD_TASK, "test": HARD_TEST},
+    {"id": "amb", "task": AMB_TASK, "test": VALIDATOR_TEST},
+    {"id": "valid", "task": VALID_TASK, "test": VALID_TEST},
 ]
 
 BASE_URL = "http://localhost:11434/v1"
@@ -148,11 +235,18 @@ def make_repo(tmp: Path, test_content: str) -> Path:
 
 
 def main() -> None:
-    runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-    models = sys.argv[2:] or ["qwen2.5-coder:7b", "qwen2.5-coder:14b"]
+    args = [a for a in sys.argv[1:]]
+    task_filter: set[str] | None = None
+    if "--tasks" in args:
+        i = args.index("--tasks")
+        task_filter = set(args[i + 1].split(","))
+        args = args[:i] + args[i + 2 :]
+    runs = int(args[0]) if args else 3
+    models = args[1:] or ["qwen2.5-coder:7b", "qwen2.5-coder:14b"]
+    tasks = [t for t in TASKS if task_filter is None or t["id"] in task_filter]
     summary: dict[tuple[str, str], list[bool]] = {}
     for model_name in models:
-        for task in TASKS:
+        for task in tasks:
             for i in range(runs):
                 tmp = Path(tempfile.mkdtemp(prefix="baseline-"))
                 repo = make_repo(tmp, task["test"])
