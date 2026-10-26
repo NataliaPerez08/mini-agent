@@ -134,6 +134,13 @@ the runner carries the original hard task (`HARD_TASK`) while the live
 test gates on a task within reliable 14B reach; capability tracking
 stays with the baseline runner.
 
+Extended in v3.2.2 (tooling): the runner is now a graded three-task
+suite (`msg` string change, `mid` severity semantics, `hard` control
+flow) instead of a single task. One task is a transcript, not a
+benchmark; the suite gives harness changes real resolution. The `mid`
+test is verified to fail on the pristine repo and pass with its
+one-line fix.
+
 ### 6.3 `runs.jsonl` and traces are intentionally untracked
 
 Experiment records are gitignored by design (see `AGENTS.md`). Attribution to

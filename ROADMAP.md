@@ -787,6 +787,41 @@ Regression tests: `tests/test_v321_hardening.py` (git-rejects sanity
 check, mixed-cluster apply, no-context loud failure, unique and
 whitespace-flexible leading anchors, ambiguous refusal).
 
+### v3.2.2 — Graded Benchmark Suite (tooling, no harness bump)
+
+Status: implemented. No harness behavior change; runs.jsonl records
+harness version + git commit, and the commit attributes the tooling
+change.
+
+Motivation:
+
+Three harness versions were measured against a single MODIFY task.
+One task is a transcript, not a benchmark (AGENTS.md benchmark
+discipline). The observed 7B failure mode (message-string swaps that
+never touch control flow) is exactly the kind of signal a graded
+suite resolves into per-difficulty data.
+
+Changes:
+
+* `experiments/baseline_modify.py` now runs a three-task suite
+  against a fresh repo copy per run:
+
+  | id   | difficulty | required change |
+  |------|------------|-----------------|
+  | msg  | easy       | string change in an issue message (the live-test task) |
+  | mid  | medium     | severity semantics: the empty-rules issue goes warning -> error |
+  | hard | hard       | control flow: empty name produces exactly one issue |
+
+* The `mid` test (`TestValidateEmptyRulesIsError`) is deterministically
+  verified: it fails on the pristine repo and passes with its one-line
+  severity fix.
+* Per-run output carries the task id; a per-(model, task) solve
+  summary closes each sweep. `runs.jsonl` records the full task text,
+  so records are groupable without new fields.
+
+The post-v3.2.2 sweep table lives below, after the v3.1.8/v3.2.x
+tables.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
