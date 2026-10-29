@@ -6,7 +6,7 @@ This file is a working catalog. Items are removed when resolved and marked as
 covered by a regression test. See `ROADMAP.md` for future architecture and
 `AGENTS.md` for the design principles the issues are judged against.
 
-Last updated against: HARNESS_VERSION `v3.1.7`.
+Last updated against: HARNESS_VERSION `v3.3.0`.
 
 ---
 
@@ -197,33 +197,46 @@ not from git history.
   matches exactly one whitespace-insensitive position (no context or
   an ambiguous one still fails loudly). Regression tests in
   `tests/test_v321_hardening.py`.
-- **Zero-change patches**: both models sometimes emit patches that
-  apply but change nothing (`files=[], added=0, removed=0`). The
-  harness accepts them as successful `apply_patch` actions, consumes
-  a verification cycle and budget, and gives the model no useful
-  feedback. Observed in the H1/H2 sweep: 7B amb failures (two no-op
-  patches per run) and 14B valid failures. Candidate hardening:
-  reject no-op patches deterministically as a structured failure
-  (like `duplicate_action`) without transitioning to VERIFY. Not
-  acted on yet — recorded in the ROADMAP H1/H2 section.
+- **Zero-change patches**: resolved in v3.3.0. `RepoTools.apply_patch`
+  fingerprints the working tree before and after the apply — `git diff`
+  plus the raw bytes of the patch's target files, because git diff alone
+  is blind to untracked files — and returns `PATCH NO-OP` when nothing
+  changed; the anchor fallback gets the same comparison and no longer
+  reports vacuous success for patches with no change clusters. The
+  handler rejects no-ops as structured failures (like
+  `duplicate_action`): no VERIFY transition, no `patches_applied`
+  increment, a `noop_patch` trace event, and a dedicated
+  `MAX_CONSECUTIVE_NOOP = 3` budget that fails the run with
+  `stop_reason="noop_patch"`. `noop_patches` is recorded in
+  `runs.jsonl`. Live amb re-run (3 rounds): the 7B's failures now end
+  `noop_patch` with `patches=0, tests=0` (previously two no-ops per run
+  were counted as patches and burned verification cycles before
+  `llm_call_budget_exhausted`); the 14B stays 3/3 in 3 calls.
+  Regression tests in `tests/test_v330_hardening.py`.
 - **Patch generation without a literal path**: the 7B constructs
   correct patches when the task text names the target file, but with
   the path removed (identical auto-loaded context, `amb` task) it
-  emits zero-change patches until budget exhaustion. The 14B does not
-  have this dependency (it infers the file from the auto-loaded test
-  symbol's path). A 7B-capability observation, not a harness bug; it
-  bounds what context-selection improvements can achieve on the 7B.
+  emits zero-change patches until the dedicated no-op budget stops
+  the run (confirmed in the v3.3.0 amb re-run: 0/3,
+  `stop_reason="noop_patch"`, three rejected no-ops per run). The 14B
+  does not have this dependency (it infers the file from the
+  auto-loaded test symbol's path). A 7B-capability observation, not a
+  harness bug; it bounds what context-selection improvements can
+  achieve on the 7B.
 
 ## Severity summary
 
 | Area | Low | Medium | High |
 |------|-----|--------|------|
 | Correctness        | — | — | — |
-| Verification       | — | 2 (non-pytest/Go frameworks) | — |
+| Verification       | — | 2 (frameworks beyond pytest/Go) | — |
 | Invalid output     | — | — | — |
-| Context selection  | — | 4.2, 4.3 | — |
+| Context selection  | 4.2 residual (name-level references, no type resolution) | — | — |
+| Live-model / hardening | 8 (7B patch generation without a literal path) | — | — |
 | Versioning/exp     | 6.3 | — | — |
 
 High-severity items: none currently open. The most impactful open items are
-**4.2/4.3** (residual symbol disambiguation and repo-map narrowing) and
-**2** (targeted verification beyond pytest and Go).
+**2** (targeted verification beyond pytest and Go) and the **4.2 residual**
+(name-level reference matching; true resolution is v4 LSP territory). The
+7B's path-less patch generation (section 8) remains a capability bound, now
+with a named stop reason (`noop_patch`).

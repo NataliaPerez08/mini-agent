@@ -32,6 +32,7 @@ from .state import (
     FAST_PATH_MAX_CHARS,
     MAX_CODE_CONTEXT_CHARS,
     MAX_CONSECUTIVE_INVALID,
+    MAX_CONSECUTIVE_NOOP,
     MAX_READ_ACTIONS,
     MAX_RELEVANT_SYMBOLS,
     MAX_REPAIR_CYCLES,
@@ -190,6 +191,8 @@ class RunState:
     patchless_finish_rejected: bool = False
     verification_failed: bool = False
     consecutive_invalid: int = 0
+    consecutive_noop_patches: int = 0
+    noop_patches: int = 0
     budget_exhausted_logged: bool = False
     budget_recovery_used: bool = False
 
@@ -873,6 +876,19 @@ class Orchestrator:
                 rs.consecutive_invalid = 0
 
                 outcome = handler.handle(kind, action, state)
+                if rs.consecutive_noop_patches >= MAX_CONSECUTIVE_NOOP:
+                    agent._log_event(
+                        "budget_exhausted",
+                        budget="noop_patch",
+                        used=rs.consecutive_noop_patches,
+                        limit=MAX_CONSECUTIVE_NOOP,
+                        state=state.value,
+                    )
+                    rs.stop_reason = "noop_patch"
+                    prev = state
+                    state = AgentState.FAILED
+                    agent._transition(prev, state)
+                    break
                 if outcome.new_state is not None and validate_transition(
                     state, outcome.new_state
                 ):
@@ -914,6 +930,7 @@ class Orchestrator:
                 files_read=len(agent.progress.files_read),
                 searches=len(agent.progress.searches),
                 patches=agent.progress.patches_applied,
+                noop_patches=rs.noop_patches,
                 tests_run=agent.progress.tests_run,
                 prompt_tokens=rs.total_prompt_tokens,
                 completion_tokens=rs.total_completion_tokens,

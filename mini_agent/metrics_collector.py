@@ -21,6 +21,7 @@ class AgentResult:
     files_read: int = 0
     searches: int = 0
     patches: int = 0
+    noop_patches: int = 0
     tests_run: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -106,6 +107,8 @@ def print_metrics(result: AgentResult, vprint: VPrint) -> None:
     vprint(f"files_read: {result.files_read}")
     vprint(f"searches: {result.searches}")
     vprint(f"patches: {result.patches}")
+    if result.noop_patches:
+        vprint(f"noop_patches: {result.noop_patches}")
     vprint(f"tests: {result.tests_run}")
     if result.prompt_tokens:
         vprint(f"prompt_tokens: {result.prompt_tokens}")
@@ -138,6 +141,7 @@ def build_run_metrics(result: AgentResult) -> RunMetrics:
         files_read=result.files_read,
         searches=result.searches,
         patches=result.patches,
+        noop_patches=result.noop_patches,
         tests=result.tests_run,
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,

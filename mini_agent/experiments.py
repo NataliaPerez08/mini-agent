@@ -20,6 +20,7 @@ class RunMetrics:
     files_read: int = 0
     searches: int = 0
     patches: int = 0
+    noop_patches: int = 0
     tests: int = 0
 
     prompt_tokens: int = 0
@@ -180,6 +181,7 @@ class ExperimentLogger:
                 "files_read": run.metrics.files_read,
                 "searches": run.metrics.searches,
                 "patches": run.metrics.patches,
+                "noop_patches": run.metrics.noop_patches,
                 "tests": run.metrics.tests,
                 "prompt_tokens": run.metrics.prompt_tokens,
                 "completion_tokens": run.metrics.completion_tokens,

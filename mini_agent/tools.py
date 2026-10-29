@@ -175,7 +175,35 @@ class RepoTools:
             for p in proc.stdout.strip().splitlines()
         )
 
+    def _git_diff(self) -> str:
+        proc = subprocess.run(
+            ["git", "diff", "--"],
+            cwd=self.repo,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return proc.stdout
+
+    def _apply_fingerprint(self, patch: str) -> str:
+        """Working-tree state relevant to one apply.
+
+        git diff alone is blind to untracked files (an anchored change
+        to an untracked target would look like a no-op), so the patch's
+        target files are fingerprinted alongside the diff.
+        """
+        parts = [self._git_diff()]
+        targets = re.findall(r"^(?:--- a/|\+\+\+ b/)(\S+)", patch, re.MULTILINE)
+        for target in dict.fromkeys(targets):
+            try:
+                fpath = self._safe_path(target)
+                parts.append(fpath.read_bytes().decode("utf-8", "replace"))
+            except (ValueError, OSError):
+                pass
+        return "\x00".join(parts)
+
     def apply_patch(self, patch: str) -> str:
+        state_before = self._apply_fingerprint(patch)
         proc = subprocess.run(
             [
                 "git",
@@ -217,14 +245,9 @@ class RepoTools:
                 )
             out = self._anchor_apply(normalize_patch(patch))
             if out:
-                diff = subprocess.run(
-                    ["git", "diff", "--"],
-                    cwd=self.repo,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                return "PATCH APPLIED\n" + diff.stdout[-12000:]
+                if self._apply_fingerprint(patch) == state_before:
+                    return "PATCH NO-OP\n" + self._git_diff()[-12000:]
+                return "PATCH APPLIED\n" + self._git_diff()[-12000:]
             m = re.search(r"patch failed: (\S+):(\d+)", proc.stderr)
             out = f"PATCH FAILED\n{proc.stderr.strip()}"
             if m:
@@ -241,14 +264,9 @@ class RepoTools:
                         f"{line} (your patch context does not match this):\n{ctx}"
                     )
             return out
-        diff = subprocess.run(
-            ["git", "diff", "--"],
-            cwd=self.repo,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        return "PATCH APPLIED\n" + diff.stdout[-12000:]
+        if self._apply_fingerprint(patch) == state_before:
+            return "PATCH NO-OP\n" + self._git_diff()[-12000:]
+        return "PATCH APPLIED\n" + self._git_diff()[-12000:]
 
     def _anchor_apply(self, patch: str) -> bool:
         """Last-resort apply anchored on each change cluster's removal
@@ -297,6 +315,8 @@ class RepoTools:
                 flush()
                 leading = line[1:]
         flush()
+        if not clusters:
+            return False
 
         def norm(s: str) -> str:
             return " ".join(s.split())

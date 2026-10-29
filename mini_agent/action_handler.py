@@ -376,7 +376,36 @@ class ActionHandler:
         tool_output = self.agent.tools.apply_patch(patch_text)
         self.rs.tool_calls += 1
 
+        if tool_output.startswith("PATCH NO-OP"):
+            self.rs.noop_patches += 1
+            self.rs.consecutive_noop_patches += 1
+            msg = (
+                "PATCH REJECTED (NO-OP): the patch applied but changed "
+                "nothing (the working tree is identical). Do NOT resend "
+                "it. Compare the TEST FAILURE with the ACTIVE CODE and "
+                "write a DIFFERENT patch with real +/- lines."
+            )
+            self.agent.last_tool_result = msg
+            self.agent.working_context.add_fact(msg)
+            self._vprint("[verbose] WARNING: no-op patch rejected")
+            self._log_event(
+                "tool_call",
+                action="apply_patch",
+                state=state.value,
+                success=False,
+            )
+            self._log_event(
+                "noop_patch",
+                state=state.value,
+                files=[],
+                added_lines=0,
+                removed_lines=0,
+            )
+            return ActionOutcome()
+
         if tool_output.startswith("PATCH APPLIED"):
+            added, removed = _count_diff_lines(tool_output)
+            self.rs.consecutive_noop_patches = 0
             self.agent.progress.record_patch()
             self.rs.patched_files = _extract_patched_files(tool_output)
             compact = tool_output[-4000:]
@@ -410,7 +439,6 @@ class ActionHandler:
                 focus_symbols=self.rs.auto_symbols,
             )
 
-            added, removed = _count_diff_lines(tool_output)
             self._log_event(
                 "tool_call",
                 action="apply_patch",

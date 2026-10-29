@@ -1032,7 +1032,7 @@ consume a verification cycle and budget, and give the model no useful
 feedback. They appeared in 7B amb failures (x2 per run) and 14B valid
 failures. A deterministic no-op-patch rejection (structured failure
 like `duplicate_action`, no VERIFY transition) is a small, measurable
-next change.
+next change. (Implemented in v3.3.0, below.)
 
 Session-variance caveat: paired runs shared one ollama session per
 round and the interleaved order prevents condition clustering, but at
@@ -1040,6 +1040,53 @@ temperature 0 single-run deltas (e.g. the 14B's 2-vs-3 calls) should
 be read as exploratory. The stable findings are the mechanism
 (selection 6/6 vs 0/6), the identical solve rates, and the repeated
 failure modes.
+
+### v3.3.0 — No-Op Patch Rejection
+
+Status: implemented (HARNESS_VERSION v3.3.0).
+
+Motivation (the H1/H2 cross-cutting finding above): zero-change
+patches were accepted as successful `apply_patch` actions, consumed a
+verification cycle and budget, and gave the model no useful feedback.
+
+Changes:
+
+* `RepoTools.apply_patch` fingerprints the working tree before and
+  after the apply — `git diff` plus the raw bytes of the patch's
+  target files, because git diff alone is blind to untracked files
+  (caught by `test_v321_hardening`'s uncommitted fixture) — and
+  returns `PATCH NO-OP` when the tree is unchanged. The anchor
+  fallback gets the same comparison and no longer reports vacuous
+  success for patches with no change clusters (headers-only patches
+  now fail loudly with git's own error).
+* The handler rejects `PATCH NO-OP` as a structured failure like
+  `duplicate_action`: no VERIFY transition, no `patches_applied`
+  increment, a `noop_patch` trace event, and explicit feedback.
+* Dedicated control-flow budget: `MAX_CONSECUTIVE_NOOP = 3` no-op
+  rejections without an intervening successful patch fail the run
+  deterministically with `stop_reason="noop_patch"` and a
+  `budget_exhausted` trace event (`budget="noop_patch"`).
+* `noop_patches` added to `RunMetrics`/`AgentResult`/`runs.jsonl`.
+
+Regression tests: `tests/test_v330_hardening.py` (clean-tree and
+dirty-tree no-op detection, anchor vacuous-success fix, no VERIFY
+transition, counter reset on successful patch, budget-exhaustion
+events, runs.jsonl fields, real-patch path unchanged).
+
+Live amb re-run (v3.3.0, 3 rounds per model, temperature 0, same
+repo/test command/budgets as the H1/H2 sweep):
+
+| Model | Task | v3.2.2 (H1/H2 sweep) | v3.3.0 (re-run) |
+|-------|------|----------------------|-----------------|
+| 7b    | amb  | 0/3, 8 calls, ~20.8k tok; 2 no-ops per run counted as patches + wasted verifications, stop=`llm_call_budget_exhausted` | 0/3, 8 calls, ~19.2k tok; patches=0, tests=0, 3 rejected no-ops, stop=`noop_patch` |
+| 14b   | amb  | 3/3, 3 calls, ~6.8k tok | 3/3, 3 calls, ~6.4k tok |
+
+Reading: solve rates unchanged, as expected — the 7B's blocker is
+patch generation without a literal path (CURRENT_ISSUES 8), not the
+harness. What changed is attribution and cost: no-ops no longer
+consume verification cycles or patch counts, and the stop reason
+names the failure mode instead of a generic budget exhaustion. The
+14B is unaffected.
 
 ## Current Known Issues
 
