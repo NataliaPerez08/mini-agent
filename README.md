@@ -7,11 +7,13 @@ It exposes only a few operations to the model:
 - `read_symbol`
 - `read_file`
 - `search_code`
+- `plan`
 - `apply_patch`
-- `run_tests`
 - `finish`
 
-The controller allows one action per model turn and automatically validates edits by running a configurable test command.
+The controller allows one action per model turn, validates each action
+against the current state, and verifies edits deterministically by running
+the configured test command. Test execution is never a model action.
 
 ## Quick start
 
@@ -120,10 +122,10 @@ Patch:
 {"action":"apply_patch","patch":"*** unified diff here ***"}
 ```
 
-Tests:
+Plan:
 
 ```json
-{"action":"run_tests"}
+{"action":"plan","files":["src/app.py"],"summary":"Add input validation to process_request"}
 ```
 
 Finish:
@@ -140,7 +142,7 @@ Task
   -> relevant symbol candidates (auto-selected from task keywords)
   -> compact working context (pruned by char budget)
   -> model
-  -> one validated tool action (read_symbol / read_file / search_code / apply_patch)
+  -> one validated tool action (read_symbol / read_file / search_code / plan / apply_patch)
   -> verification
   -> repeat
 ```
@@ -167,7 +169,7 @@ internal/firewall/service.go
 ```
 
 `read_symbol` resolves a symbol name to its line range and reads only
-`start_line - 5` through `end_line + 5`, avoiding sending entire large files
+`start_line - 4` through `end_line + 4`, avoiding sending entire large files
 to the model.
 
 ## Context budget
