@@ -1088,6 +1088,53 @@ consume verification cycles or patch counts, and the stop reason
 names the failure mode instead of a generic budget exhaustion. The
 14B is unaffected.
 
+### v3.3.1 — Verification Escalation Ladder (v6 core)
+
+Status: implemented (HARNESS_VERSION v3.3.1).
+
+Motivation: verification stopped at the targeted run. When the
+patched file's related test passed, the run went DONE without ever
+running the full configured command — a patch that broke tests
+outside the targeted set was reported as successful (a false success
+in the same family as the former unverified-patch issue 1.2).
+
+Changes:
+
+* `RepoTools.targeted_test_command(test_files)` returns the narrowed
+  command or "" when the configured command cannot be narrowed;
+  `run_targeted_tests` routes through it (same commands as before for
+  pytest and Go; the unnarrowable fallback runs the full command once
+  instead of duplicating it).
+* `Orchestrator._run_verification` escalates narrow-to-broad:
+  targeted FAIL -> fail fast with the narrow output (cheap repair
+  iteration); targeted PASS -> run the full configured command; full
+  FAIL -> REPAIR with the full output, whose failures feed the
+  existing diagnostic symbol loading. Unnarrowable commands run the
+  full command exactly once.
+* One `test_run` trace event per executed command
+  (`scope="targeted"|"full"`, success, duration); the verdict `test`
+  event and the `tests` metric (verification cycles) are unchanged,
+  so runs stay comparable across versions.
+
+Regression tests: `tests/test_v331_hardening.py` — the false-success
+shape (related test passes, a non-related test breaks: FAILED with
+`stop_reason="test_failure"`, both scopes in the trace), targeted
+fail-fast (no full run), clean success (both scopes), unnarrowable
+single full run, and `targeted_test_command` unit cases.
+
+Live amb re-run (v3.3.1, 3 rounds per model, temperature 0, same
+repo/test command/budgets):
+
+| Model | Task | v3.3.0                   | v3.3.1                                  |
+|-------|------|--------------------------|-----------------------------------------|
+| 7b    | amb  | 0/3 (3x `noop_patch`)    | 0/3 (2x `noop_patch`, 1x `llm_call_budget_exhausted`; session variance at temperature 0, never reaches VERIFY) |
+| 14b   | amb  | 3/3, 3 calls             | 3/3, 3 calls; VERIFY now runs targeted (~0.2-0.4s) then full (~0.7-1.3s) |
+
+Live ollama test passes on the closing commit. Solve rates unchanged,
+as expected: the ladder only affects runs that reach VERIFY with a
+targeted pass, and on this suite the extra confirmation costs about
+one second per successful run.
+
 ## Current Known Issues
 
 Open problems, limitations, and open questions are tracked in
@@ -1197,6 +1244,12 @@ ApplyPolicy
 Use the graph for context selection rather than dumping it into the prompt.
 
 ### v6 — Targeted Verification
+
+Status: escalation ladder implemented in v3.3.1 (targeted fail-fast;
+a targeted pass is confirmed against the full configured command, so
+regressions outside the targeted set are caught — see the v3.3.1
+section below). Remaining for this phase: narrowing beyond pytest and
+Go (Jest, cargo test) — revisit with real tasks in those languages.
 
 Goal:
 

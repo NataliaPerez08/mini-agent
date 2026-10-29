@@ -197,7 +197,9 @@ class TestNoopBudget:
         assert rec["stop_reason"] == "noop_patch"
         assert rec["patches"] == 0
         assert rec["noop_patches"] == 3
-        assert rec["harness_version"] == "v3.3.0"
+        from mini_agent.version import HARNESS_VERSION
+
+        assert rec["harness_version"] == HARNESS_VERSION
         assert rec["llm_calls"] == result.llm_calls
 
 

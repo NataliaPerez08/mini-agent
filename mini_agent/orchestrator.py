@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -361,23 +362,48 @@ class Orchestrator:
             )
             loaded += 1
 
-    def _run_verification(self, patched_files: list[str]) -> tuple[bool, str, bool]:
-        """Run deterministic verification.
+    def _exec_test(self, scope: str, run: Callable[[], str]) -> str:
+        start = time.time()
+        output = run()
+        passed = output.split("\n", 1)[0] == "EXIT_CODE=0"
+        self.agent._log_event(
+            "test_run",
+            scope=scope,
+            success=passed,
+            duration_seconds=round(time.time() - start, 2),
+        )
+        return output
 
-        Returns (passed, output, verified). verified is False only when no
-        test command is configured: nothing executed, so a patch cannot be
-        reported as successful.
+    def _run_verification(self, patched_files: list[str]) -> tuple[bool, str, bool]:
+        """Run deterministic verification with narrow-to-broad escalation.
+
+        Targeted tests fail fast with narrow feedback. A targeted pass
+        is confirmed against the full configured command, so a patch
+        that breaks tests outside the targeted set can no longer be
+        reported as successful (ROADMAP v6 ladder). Returns (passed,
+        output, verified). verified is False only when no test command
+        is configured: nothing executed, so a patch cannot be reported
+        as successful.
         """
         if not self.agent.tools.test_command.strip():
             self.agent._vprint("[verbose] no tests configured, patch is unverified")
             return False, "NO TESTS CONFIGURED", False
         related = self._find_related_tests(patched_files)
-        if related:
-            self.agent._vprint(f"[verbose] targeted tests: {', '.join(related)}")
-            output = self.agent.tools.run_targeted_tests(related)
-        else:
+        if not self.agent.tools.targeted_test_command(related):
             self.agent._vprint(f"[verbose] test command: {self.agent.tools.test_command}")
-            output = self.agent.tools.run_tests()
+            output = self._exec_test("full", self.agent.tools.run_tests)
+            passed = output.split("\n", 1)[0] == "EXIT_CODE=0"
+            return passed, output, True
+        self.agent._vprint(f"[verbose] targeted tests: {', '.join(related)}")
+        targeted = self._exec_test(
+            "targeted", lambda: self.agent.tools.run_targeted_tests(related)
+        )
+        if targeted.split("\n", 1)[0] != "EXIT_CODE=0":
+            return False, targeted, True
+        self.agent._vprint(
+            "[verbose] targeted tests passed, confirming with the full command"
+        )
+        output = self._exec_test("full", self.agent.tools.run_tests)
         passed = output.split("\n", 1)[0] == "EXIT_CODE=0"
         return passed, output, True
 

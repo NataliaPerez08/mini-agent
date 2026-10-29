@@ -6,7 +6,7 @@ This file is a working catalog. Items are removed when resolved and marked as
 covered by a regression test. See `ROADMAP.md` for future architecture and
 `AGENTS.md` for the design principles the issues are judged against.
 
-Last updated against: HARNESS_VERSION `v3.3.0`.
+Last updated against: HARNESS_VERSION `v3.3.1`.
 
 ---
 
@@ -36,6 +36,18 @@ Resolved in v3.1.6 for Go (regression tests in `tests/test_tools.py`):
   package-targeted `go test ./<pkg>/` for go-flavored commands (walking
   to the nearest `go.mod`, falling back to the full command across
   multiple modules).
+
+Resolved in v3.3.1 (ROADMAP v6 ladder; regression tests in
+`tests/test_v331_hardening.py`): a targeted pass no longer ends
+verification. The targeted run fails fast with narrow feedback; a
+targeted pass is confirmed against the full configured command, so a
+patch that breaks tests outside the targeted set can no longer be
+reported as successful. When the command cannot be narrowed (no
+related tests, or a framework without narrowing support) the full
+command runs exactly once. Each executed command emits a `test_run`
+trace event (`scope="targeted"|"full"`); the verdict `test` event and
+the `tests` metric (verification cycles) are unchanged.
+
 - Remaining gap: frameworks other than pytest and Go (e.g. Jest, cargo
   test) still fall back to the full configured command. Correct but not
   cheap; revisit with real tasks in those languages.

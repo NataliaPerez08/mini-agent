@@ -407,19 +407,26 @@ class RepoTools:
         combined = (proc.stdout + "\n" + proc.stderr).strip()
         return f"EXIT_CODE={proc.returncode}\n{combined[-16000:]}"
 
+    def targeted_test_command(self, test_files: list[str]) -> str:
+        """Narrowed test command for the given test files, or "" when
+        the configured command cannot be narrowed (the caller then runs
+        the full command once instead of twice)."""
+        base = self.test_command.strip()
+        if not base or not test_files:
+            return ""
+        if "pytest" in base:
+            prefix = "python -m pytest" if "-m pytest" in base else "pytest"
+            return f"{prefix} -q {' '.join(test_files)}"
+        if "go test" in base:
+            return self._go_test_command(test_files)
+        return ""
+
     def run_targeted_tests(self, test_files: list[str]) -> str:
         if not self.test_command.strip():
             return "NO TEST COMMAND CONFIGURED"
-        if not test_files:
+        cmd = self.targeted_test_command(test_files)
+        if not cmd:
             return self.run_tests()
-        base = self.test_command.strip()
-        if "pytest" in base:
-            prefix = "python -m pytest" if "-m pytest" in base else "pytest"
-            cmd = f"{prefix} -q {' '.join(test_files)}"
-        elif "go test" in base:
-            cmd = self._go_test_command(test_files) or base
-        else:
-            cmd = base
         proc = subprocess.run(
             cmd,
             cwd=self.repo,
